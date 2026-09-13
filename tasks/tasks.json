@@ -1,0 +1,9 @@
+[
+  {
+    "_comment": "WHY: The task suite (build step 3) -- HumanEval/MBPP-style problems, each shipping with hidden tests the sandbox runs. Kept as data so the suite is identical across runs, which fair regression comparison requires. NEEDS: 15-20 tasks with a mix of difficulty (some that pass first try, some that need retries, a few that may never pass). Each task: task_id, prompt (signature + docstring), entry_point (function name), test_code (Python that defines individual test functions calling the entry point). Delete this example entry once real tasks are added.",
+    "task_id": "example_001",
+    "prompt": "def add(a: int, b: int) -> int:\n    \"\"\"Return the sum of a and b.\"\"\"\n",
+    "entry_point": "add",
+    "test_code": "def test_positive():\n    assert add(2, 3) == 5\n\ndef test_negative():\n    assert add(-1, -1) == -2\n"
+  }
+]

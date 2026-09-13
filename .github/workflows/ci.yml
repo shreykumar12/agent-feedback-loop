@@ -1,0 +1,29 @@
+# WHY THIS FILE EXISTS:
+#   Build step 8: CI signals production habits and proves the project works
+#   on a clean machine, not just yours.
+#
+# WHAT IT NEEDS:
+#   - Run on push + pull_request to main.
+#   - Set up Python, install requirements.txt, run pytest.
+#   - Unit tests must NOT require GEMINI_API_KEY (fake agent in test_graph.py).
+#   - Optional later: lint step (ruff), and a manually-triggered job
+#     (workflow_dispatch) that runs a tiny suite with a repo secret.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: pytest

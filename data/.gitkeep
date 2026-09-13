@@ -1,0 +1,6 @@
+# WHY THIS FILE EXISTS:
+#   Git doesn't track empty directories. This keeps data/ in the repo as the
+#   home for the SQLite database (agent_eval.db), which is gitignored via *.db.
+#
+# WHAT IT NEEDS:
+#   Nothing.

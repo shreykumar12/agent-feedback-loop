@@ -365,8 +365,8 @@ footer { font-size: 0.8rem; color: var(--muted); }
             tooltip: [{ field: "config", title: "configuration" }, { field: "k", title: "try" }, { field: "pass_rate", title: "pass rate", format: ".1%" }] } },
       ],
     };
-    const narrow = (id) => (document.getElementById(id).clientWidth || 520) < 560;
-    const facetCols = (id, n) => narrow(id) ? 1 : n;
+    // Side-by-side facets while each gets >= 150px, otherwise stack them.
+    const facetCols = (id, n) => ((document.getElementById(id).clientWidth || 520) / n < 150 ? 1 : n);
     out["c-passk"] = passkFacet
       ? { data: { values: D.pass_at_k }, facet: { field: "model", title: null, sort: models }, columns: facetCols("c-passk", models.length),
           spec: { width: chartWidth("c-passk", facetCols("c-passk", models.length)), height: 210, ...passkLayer }, resolve: { scale: { x: "shared" } } }

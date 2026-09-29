@@ -7,3 +7,6 @@ __pycache__/
 Spec.md
 structure.md
 agents.md
+reports/
+.pytest_cache/
+.ruff_cache/

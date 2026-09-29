@@ -62,3 +62,18 @@ Optional: LLM judge for readability/approach only, on passing code only.
   summarize_ranges (runs of 2 are not ranges), lru_simulate (put refreshes recency),
   evaluate_expression (/ truncates toward zero).
 - Generator script lived in the session scratchpad (not committed); tasks.json is the source of truth.
+
+## Findings from the simulated ablation (60 runs: 3 sim models x 4 feedback levels x 5 seeds)
+- Sim calibration bug found + fixed: "names" feedback scored BELOW "minimal" because
+  the blind-retry branch had a higher fix probability than the names branch.
+  Now all retries share a blind floor p_blind = first_try*0.5 and info only adds.
+- Final pass rate (mean of 5 seeds), minimal -> names -> full:
+  sim-strong 85 -> 97 -> 100, sim-base 82 -> 92 -> 96, sim-weak 59 -> 77 -> 87.
+  Richer feedback helps the weak model most (+28pp vs +15pp).
+- pass@1 is identical across feedback levels for the same seed (the first try never
+  sees feedback) -> the ablation is a controlled, paired experiment.
+- Self-correction MASKS model regressions: strong->weak single-seed swap drops
+  final pass rate 10pp but pass@1 40pp. => compare reports McNemar on pass@1 too.
+- Noise: an A/A comparison (same config, seed 0 vs 1) trips the pass@1 threshold
+  on a 20-task suite. => repeated-run group comparison with permutation test and
+  pooled (seed, task) McNemar. full->minimal: 14 pairs lost / 0 gained, p=1.2e-4.

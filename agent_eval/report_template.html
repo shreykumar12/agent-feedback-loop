@@ -1,0 +1,491 @@
+<title>AgentEval Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a test-log style run header, KPI strip, then a two-column grid of
+   chart cards; wide grids (per-task matrix, tables) span both columns. */
+:root {
+  --page: #f6f6f3;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #6f6d68;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --wash: #eeede8;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --seq-lo: #cde2fb;
+  --seq-mid: #5598e7;
+  --seq-hi: #0d366b;
+  --neutral-mark: #b9b7ae;
+  --good: #006300;
+  --good-mark: #0ca30c;
+  --critical: #b3261e;
+  --critical-mark: #d03b3b;
+  --warn-bg: #fdf3dc;
+  --warn-ink: #5c4300;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a9890;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --wash: #242423;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --seq-lo: #1c2a3d; --seq-mid: #2a78d6; --seq-hi: #b7d3f6; --neutral-mark: #57564f;
+    --good: #0ca30c; --good-mark: #0ca30c; --critical: #e66767; --critical-mark: #d03b3b;
+    --warn-bg: #3a2f12; --warn-ink: #f5d98f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #9a9890;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --wash: #242423;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+  --seq-lo: #1c2a3d; --seq-mid: #2a78d6; --seq-hi: #b7d3f6; --neutral-mark: #57564f;
+  --good: #0ca30c; --good-mark: #0ca30c; --critical: #e66767; --critical-mark: #d03b3b;
+  --warn-bg: #3a2f12; --warn-ink: #f5d98f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--page); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.5; margin: 0; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: flex; flex-direction: column; gap: 22px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 600; }
+h1 { font-size: 1.75rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.mono { font-family: var(--font-mono); font-size: 0.85em; }
+.muted { color: var(--ink-2); }
+header.run { display: flex; flex-direction: column; gap: 10px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-2); }
+.meta b { color: var(--ink); font-weight: 500; }
+.banner { background: var(--warn-bg); color: var(--warn-ink); border-radius: var(--radius); padding: 10px 14px; font-size: 0.9rem; max-width: 80ch; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.kpi .label { font-size: 0.8rem; color: var(--ink-2); }
+.kpi .value { font-size: 1.6rem; font-weight: 600; line-height: 1.15; }
+.kpi.hero .value { font-size: 2.6rem; }
+.kpi .sub { font-size: 0.78rem; color: var(--muted); font-family: var(--font-mono); }
+.pos { color: var(--good); }
+.neg { color: var(--critical); }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.card.wide { grid-column: 1 / -1; }
+.card p.caption { margin: 0; font-size: 0.86rem; color: var(--ink-2); max-width: 80ch; }
+.chart { width: 100%; min-height: 60px; overflow-x: auto; }
+.chart.loading::after { content: "Loading chart library…"; color: var(--muted); font-size: 0.85rem; }
+details { font-size: 0.85rem; }
+summary { cursor: pointer; color: var(--ink-2); width: fit-content; }
+summary:focus-visible, a:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; border-radius: 4px; }
+.table-wrap { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { font-weight: 500; color: var(--ink-2); font-size: 0.78rem; }
+td.num, th.num { text-align: right; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 0.78rem; padding: 2px 10px; border-radius: 999px; background: var(--wash); color: var(--ink); width: fit-content; }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--neutral-mark); }
+.chip.bad::before { background: var(--critical-mark); }
+.chip.ok::before { background: var(--good-mark); }
+.dyn { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.88rem; }
+.dyn b { font-weight: 600; }
+.lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 24px; font-size: 0.88rem; }
+.lists ul { margin: 4px 0 0; padding-left: 18px; font-family: var(--font-mono); font-size: 0.82rem; }
+footer { font-size: 0.8rem; color: var(--muted); }
+#vg-tooltip-element { font-family: var(--font-ui) !important; }
+@media (max-width: 820px) { .grid { grid-template-columns: minmax(0, 1fr); } .kpi.hero .value { font-size: 2.1rem; } }
+</style>
+
+<div class="wrap">
+  <header class="run">
+    <span class="eyebrow">AgentEval · self-correcting coding agent</span>
+    <h1 id="title">Evaluation report</h1>
+    <div class="meta" id="meta"></div>
+    <div class="banner" id="sim-banner" hidden>These runs use the offline simulated agent (<span class="mono">sim-*</span> models). They exercise the full measurement pipeline (sandbox, loop, storage, metrics); they are not results for a real LLM. Run with a Gemini key for real numbers.</div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="Headline metrics for the focus run"></section>
+
+  <section class="grid">
+    <article class="card">
+      <h2>Pass@k: does feedback help?</h2>
+      <p class="caption">Cumulative pass rate if the loop stopped after k tries, averaged across seeds. A flat line means retries add nothing.</p>
+      <div class="chart loading" id="c-passk"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-passk"></div></details>
+    </article>
+    <article class="card">
+      <h2>Feedback-level ablation</h2>
+      <p class="caption">Final pass rate split into tasks solved on the first try and tasks rescued by a retry. Only the feedback given to the agent differs between bars.</p>
+      <div class="chart loading" id="c-ablation"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-ablation"></div></details>
+    </article>
+    <article class="card">
+      <h2>Tries to pass</h2>
+      <p class="caption" id="cap-tries">Focus run: on which try each task first passed.</p>
+      <div class="chart loading" id="c-tries"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-tries"></div></details>
+    </article>
+    <article class="card">
+      <h2>Pass rate by difficulty</h2>
+      <p class="caption">Focus run. The retry segment is the self-correction lift for that tier.</p>
+      <div class="chart loading" id="c-difficulty"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-difficulty"></div></details>
+    </article>
+    <article class="card">
+      <h2>Error-state transitions</h2>
+      <p class="caption">Focus run. Each cell counts retries that moved from one sandbox verdict to the next. The <span class="mono">passed</span> column is where the loop succeeds.</p>
+      <div class="chart loading" id="c-transitions"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-transitions"></div></details>
+    </article>
+    <article class="card">
+      <h2>Why attempts failed</h2>
+      <p class="caption">Focus run: sandbox verdict of every failed attempt.</p>
+      <div class="chart loading" id="c-errors"></div>
+      <div class="dyn" id="dyn"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-errors"></div></details>
+    </article>
+    <article class="card wide" id="regression-card" hidden>
+      <h2>Regression check</h2>
+      <div id="regression"></div>
+    </article>
+    <article class="card wide">
+      <h2>Per-task solve matrix</h2>
+      <p class="caption">Share of seeds in which each task was solved, per configuration. The number is the mean tries-to-pass when solved; ✕ means never solved.</p>
+      <div class="chart loading" id="c-grid"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-grid"></div></details>
+    </article>
+    <article class="card wide">
+      <h2>Configurations</h2>
+      <p class="caption">One row per model, prompt version, feedback level and try budget. Values are means across seeds; ± is the sample standard deviation.</p>
+      <div class="table-wrap" id="t-configs"></div>
+    </article>
+    <article class="card wide">
+      <details><summary>All runs in this report</summary><div class="table-wrap" id="t-runs"></div></details>
+    </article>
+  </section>
+  <footer id="footer"></footer>
+</div>
+
+<script id="report-data" type="application/json">__REPORT_DATA__</script>
+<script src="https://cdn.jsdelivr.net/npm/vega@5.30.0/build/vega.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@5.21.0/build/vega-lite.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@6.26.0/build/vega-embed.min.js"></script>
+<script>
+(function () {
+  "use strict";
+  const D = JSON.parse(document.getElementById("report-data").textContent);
+  const F = D.focus;
+  const LEVELS = ["full", "names", "minimal", "none"];          // color slot order (entity-fixed)
+  const LEVEL_AXIS = ["none", "minimal", "names", "full"];      // x order: least -> most information
+  const SEGMENTS = ["Solved on try 1", "Solved by a retry"];
+  const DIFFS = ["easy", "medium", "hard"];
+
+  const pct = (v, d = 0) => (v === null || v === undefined) ? "–" : (v * 100).toFixed(d) + "%";
+  const pp = (v) => (v === null || v === undefined) ? "–" : (v >= 0 ? "+" : "−") + Math.abs(v * 100).toFixed(1) + " pp";
+  const num = (v, d = 2) => (v === null || v === undefined) ? "–" : Number(v).toFixed(d);
+  const int = (v) => (v === null || v === undefined) ? "–" : Math.round(v).toLocaleString("en-US");
+  const el = (tag, attrs = {}, text) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+
+  // ---- header ---------------------------------------------------------------
+  const fr = D.focus_run;
+  document.getElementById("title").textContent = "Evaluation report · " + fr.model;
+  const meta = document.getElementById("meta");
+  [["focus run", fr.run_id.slice(0, 8)], ["prompt", fr.prompt_version], ["feedback", fr.feedback_level],
+   ["max tries", fr.max_tries], ["seed", fr.seed], ["suite", fr.suite_hash || "–"], ["runs in report", D.num_runs]]
+    .forEach(([k, v]) => { const s = el("span", {}, k + " "); s.appendChild(el("b", {}, String(v))); meta.appendChild(s); });
+  document.getElementById("sim-banner").hidden = !D.simulated;
+  document.getElementById("footer").textContent =
+    "Generated " + D.generated_at + " by `python main.py report`. Correctness is scored only by the sandbox's hidden tests; no LLM judges correctness.";
+
+  // ---- KPI tiles --------------------------------------------------------------
+  const kpis = document.getElementById("kpis");
+  const tile = (label, value, sub, cls = "", valueCls = "") => {
+    const t = el("div", { class: "kpi " + cls });
+    t.appendChild(el("span", { class: "label" }, label));
+    t.appendChild(el("span", { class: "value " + valueCls }, value));
+    if (sub) t.appendChild(el("span", { class: "sub" }, sub));
+    kpis.appendChild(t);
+  };
+  const ci = F.pass_rate_ci95;
+  tile("Final pass rate", pct(F.pass_rate), `${F.num_passed}/${F.num_tasks} · 95% CI ${pct(ci[0])}–${pct(ci[1])}`, "hero");
+  tile("Pass@1", pct(F.pass_at_1), "first try, no feedback");
+  tile("Self-correction lift", pp(F.self_correction_lift), "final − pass@1", "", F.self_correction_lift > 0 ? "pos" : "");
+  tile("Recovery rate", pct(F.recovery_rate), `${F.num_recovered}/${F.num_failed_first} first-try failures fixed`);
+  tile("Mean tries to pass", num(F.mean_tries_to_pass), "among solved tasks");
+  tile("Tokens per solved task", int(F.tokens_per_solved), F.est_cost_usd ? "$" + F.est_cost_usd.toFixed(4) + " total" : "cost n/a (unpriced model)");
+
+  const rd = F.retry_dynamics;
+  const dyn = document.getElementById("dyn");
+  if (rd.retries) {
+    [["retries", rd.retries], ["improved", pct(rd.improved_rate)], ["regressed", pct(rd.regression_rate)],
+     ["stuck (resubmitted identical code)", pct(rd.stuck_rate)], ["mean edit ratio", num(rd.mean_edit_ratio)]]
+      .forEach(([k, v]) => { const s = el("span", {}, k + " "); s.appendChild(el("b", {}, String(v))); dyn.appendChild(s); });
+  }
+
+  // ---- tables (always available; tooltips never gate a value) -----------------
+  function table(targetId, columns, rows) {
+    const t = el("table");
+    const head = el("tr");
+    columns.forEach(c => head.appendChild(el("th", c.num ? { class: "num" } : {}, c.label)));
+    t.appendChild(el("thead")).appendChild(head);
+    const body = t.appendChild(el("tbody"));
+    rows.forEach(r => {
+      const tr = el("tr");
+      columns.forEach(c => tr.appendChild(el("td", c.num ? { class: "num" } : {}, c.fmt ? c.fmt(r[c.key], r) : String(r[c.key] ?? "–"))));
+      body.appendChild(tr);
+    });
+    document.getElementById(targetId).replaceChildren(t);
+  }
+  table("t-passk", [{ label: "configuration", key: "config" }, { label: "k", key: "k", num: true },
+    { label: "pass rate", key: "pass_rate", num: true, fmt: v => pct(v, 1) }], D.pass_at_k);
+  table("t-ablation", [{ label: "model", key: "model" }, { label: "prompt", key: "prompt_version" },
+    { label: "feedback", key: "feedback_level" }, { label: "segment", key: "segment" },
+    { label: "share of tasks", key: "value", num: true, fmt: v => pct(v, 1) },
+    { label: "final", key: "final", num: true, fmt: (v, r) => pct(v, 1) + (r.n_runs > 1 ? " ± " + pct(r.final_std, 1) : "") }], D.ablation);
+  table("t-tries", [{ label: "first passed on", key: "bucket" }, { label: "tasks", key: "count", num: true }], D.tries);
+  table("t-difficulty", [{ label: "difficulty", key: "difficulty" }, { label: "segment", key: "segment" },
+    { label: "share", key: "value", num: true, fmt: v => pct(v, 1) }, { label: "tasks", key: "n", num: true }], D.difficulty);
+  table("t-transitions", [{ label: "from", key: "from" }, { label: "to", key: "to" }, { label: "retries", key: "count", num: true }], D.transitions);
+  table("t-errors", [{ label: "verdict", key: "error_type" }, { label: "failed attempts", key: "count", num: true }], D.errors);
+  table("t-grid", [{ label: "task", key: "task_id" }, { label: "difficulty", key: "difficulty" }, { label: "configuration", key: "config" },
+    { label: "solved", key: "solved", num: true, fmt: (v, r) => `${v}/${r.runs}` },
+    { label: "mean tries", key: "mean_tries", num: true, fmt: v => num(v, 1) }], D.grid);
+  table("t-configs", [
+    { label: "model", key: "model" }, { label: "prompt", key: "prompt_version" }, { label: "feedback", key: "feedback_level" },
+    { label: "k", key: "max_tries", num: true }, { label: "seeds", key: "n_runs", num: true },
+    { label: "pass@1", key: "pass_at_1", num: true, fmt: (v, r) => pct(v, 1) + (r.n_runs > 1 ? " ± " + pct(r.pass_at_1_std, 1) : "") },
+    { label: "final", key: "pass_rate", num: true, fmt: (v, r) => pct(v, 1) + (r.n_runs > 1 ? " ± " + pct(r.pass_rate_std, 1) : "") },
+    { label: "lift", key: "lift", num: true, fmt: pp }, { label: "recovery", key: "recovery_rate", num: true, fmt: v => pct(v, 1) },
+    { label: "mean tries", key: "mean_tries", num: true, fmt: v => num(v) },
+    { label: "retry regressions", key: "regression_rate", num: true, fmt: v => pct(v, 1) },
+    { label: "stuck", key: "stuck_rate", num: true, fmt: v => pct(v, 1) },
+    { label: "tokens / solved", key: "tokens_per_solved", num: true, fmt: int }], D.configs);
+  table("t-runs", [{ label: "run", key: "run_id", fmt: v => v.slice(0, 8) }, { label: "timestamp", key: "timestamp" },
+    { label: "model", key: "model" }, { label: "prompt", key: "prompt_version" }, { label: "feedback", key: "feedback_level" },
+    { label: "k", key: "max_tries", num: true }, { label: "seed", key: "seed", num: true }, { label: "tasks", key: "num_tasks", num: true },
+    { label: "pass rate", key: "pass_rate", num: true, fmt: v => pct(v, 1) }, { label: "notes", key: "notes" }], D.runs);
+
+  // ---- regression panel -------------------------------------------------------
+  if (D.comparison) {
+    const C = D.comparison, box = document.getElementById("regression");
+    document.getElementById("regression-card").hidden = false;
+    const chip = el("span", { class: "chip " + (C.regression ? "bad" : "ok") },
+      C.regression ? "Regression flagged" : "No regression");
+    box.appendChild(chip);
+    const desc = el("p", { class: "caption" },
+      `Baseline ${C.baseline.run_id.slice(0, 8)} (${C.baseline.model} · ${C.baseline.prompt_version} · fb=${C.baseline.feedback_level}) ` +
+      `vs candidate ${C.candidate.run_id.slice(0, 8)} (${C.candidate.model} · ${C.candidate.prompt_version} · fb=${C.candidate.feedback_level}), ` +
+      `${C.num_common} paired tasks. ` + (C.reasons.length ? "Reasons: " + C.reasons.join("; ") + ". " : "") +
+      `McNemar exact p = ${C.mcnemar_p.toFixed(3)} on final pass (${C.significant ? "significant" : "not significant"} at 0.05), ` +
+      `${C.mcnemar_p_at_1.toFixed(3)} on first-try pass (${C.first_try_lost.length} lost, ${C.first_try_gained.length} gained); ` +
+      `pass-rate delta 95% CI ${pp(C.pass_rate_delta_ci95[0])} to ${pp(C.pass_rate_delta_ci95[1])}.`);
+    box.appendChild(desc);
+    const aggRows = Object.entries(C.aggregate).map(([k, v]) => ({ metric: k, ...v }));
+    const RATE = ["pass_rate", "pass_at_1", "self_correction_lift", "recovery_rate"], COUNT = ["tokens_in", "tokens_out"];
+    const fmtFor = (k) => RATE.includes(k) ? (v => pct(v, 1)) : COUNT.includes(k) ? int : k === "est_cost_usd" ? (v => "$" + num(v, 4)) : (v => num(v));
+    const wrap = el("div", { class: "table-wrap", id: "t-regression" });
+    box.appendChild(wrap);
+    table("t-regression", [{ label: "metric", key: "metric" },
+      { label: "baseline", key: "baseline", num: true, fmt: (v, r) => fmtFor(r.metric)(v) },
+      { label: "candidate", key: "candidate", num: true, fmt: (v, r) => fmtFor(r.metric)(v) },
+      { label: "delta", key: "delta", num: true, fmt: (v, r) => RATE.includes(r.metric) ? pp(v) : (v === null ? "–" : (v >= 0 ? "+" : "−") + fmtFor(r.metric)(Math.abs(v))) }], aggRows);
+    const lists = el("div", { class: "lists" });
+    [["Newly failing", C.newly_failing], ["Newly passing", C.newly_passing],
+     ["More tries", C.more_tries.map(m => `${m.task_id} (${m.baseline}→${m.candidate})`)],
+     ["Fewer tries", C.fewer_tries.map(m => `${m.task_id} (${m.baseline}→${m.candidate})`)]].forEach(([h, items]) => {
+      const d = el("div"); d.appendChild(el("h3", { class: "eyebrow" }, `${h} (${items.length})`));
+      const ul = el("ul"); (items.length ? items : ["none"]).forEach(i => ul.appendChild(el("li", {}, i)));
+      d.appendChild(ul); lists.appendChild(d);
+    });
+    box.appendChild(lists);
+    C.warnings.forEach(w => box.appendChild(el("p", { class: "caption" }, "Warning: " + w)));
+  }
+
+  // ---- charts -----------------------------------------------------------------
+  function tokens() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (n) => cs.getPropertyValue(n).trim();
+    return {
+      surface: v("--surface"), ink: v("--ink"), ink2: v("--ink-2"), muted: v("--muted"), grid: v("--grid"), axis: v("--axis"),
+      s: [v("--s1"), v("--s2"), v("--s3"), v("--s4")], seq: [v("--seq-lo"), v("--seq-mid"), v("--seq-hi")],
+      neutral: v("--neutral-mark"), font: v("--font-ui"),
+    };
+  }
+  function vlConfig(T) {
+    return {
+      background: null, font: T.font, padding: { left: 4, right: 8, top: 6, bottom: 4 },
+      view: { stroke: null },
+      axis: { labelColor: T.ink2, titleColor: T.ink2, gridColor: T.grid, domainColor: T.axis, tickColor: T.axis,
+              labelFontSize: 11, titleFontSize: 11, titleFontWeight: 500, gridWidth: 1, domainWidth: 1 },
+      legend: { labelColor: T.ink2, titleColor: T.ink2, labelFontSize: 11, titleFontSize: 11, titleFontWeight: 500, orient: "top", symbolStrokeWidth: 2 },
+      header: { labelColor: T.ink, titleColor: T.ink2, labelFontSize: 12, labelFontWeight: 500, titleFontSize: 11 },
+      text: { color: T.ink2, fontSize: 11 },
+      line: { strokeWidth: 2, strokeCap: "round", strokeJoin: "round" },
+      bar: { stroke: T.surface, strokeWidth: 2 },
+    };
+  }
+  const modelScore = {};
+  D.configs.forEach(c => { (modelScore[c.model] = modelScore[c.model] || []).push(c.pass_rate || 0); });
+  const models = Object.keys(modelScore).sort((a, b) =>
+    modelScore[b].reduce((x, y) => x + y, 0) / modelScore[b].length - modelScore[a].reduce((x, y) => x + y, 0) / modelScore[a].length);
+  const prompts = [...new Set(D.configs.map(c => c.prompt_version))];
+  const levelsPresent = LEVELS.filter(l => D.configs.some(c => c.feedback_level === l));
+  const chartWidth = (id, facets = 1) => {
+    const w = document.getElementById(id).clientWidth || 520;
+    return Math.max(140, Math.floor((w - 40 - (facets - 1) * 24) / facets) - 20);
+  };
+
+  function specs(T) {
+    const levelScale = { domain: levelsPresent, range: levelsPresent.map(l => T.s[LEVELS.indexOf(l)]) };
+    const segScale = { domain: SEGMENTS, range: [T.s[0], T.s[2]] };
+    const passkFacet = models.length > 1;
+    const out = {};
+
+    const passkLayer = {
+      layer: [
+        { mark: { type: "line" }, encoding: {
+            x: { field: "k", type: "ordinal", title: "try", axis: { labelAngle: 0 } },
+            y: { field: "pass_rate", type: "quantitative", title: "cumulative pass rate", scale: { domain: [0, 1] }, axis: { format: "%", tickCount: 5 } },
+            color: { field: "feedback_level", type: "nominal", title: "feedback", scale: levelScale, legend: { orient: "top", symbolType: "stroke" } },
+            strokeDash: prompts.length > 1 ? { field: "prompt_version", type: "nominal", title: "prompt" } : { value: [1, 0] },
+            detail: { field: "config" } } },
+        { mark: { type: "point", filled: true, size: 70, stroke: T.surface, strokeWidth: 2, opacity: 1 }, encoding: {
+            x: { field: "k", type: "ordinal" }, y: { field: "pass_rate", type: "quantitative" },
+            color: { field: "feedback_level", type: "nominal", scale: levelScale, legend: null },
+            tooltip: [{ field: "config", title: "configuration" }, { field: "k", title: "try" }, { field: "pass_rate", title: "pass rate", format: ".1%" }] } },
+      ],
+    };
+    const narrow = (id) => (document.getElementById(id).clientWidth || 520) < 560;
+    const facetCols = (id, n) => narrow(id) ? 1 : n;
+    out["c-passk"] = passkFacet
+      ? { data: { values: D.pass_at_k }, facet: { field: "model", title: null, sort: models }, columns: facetCols("c-passk", models.length),
+          spec: { width: chartWidth("c-passk", facetCols("c-passk", models.length)), height: 210, ...passkLayer }, resolve: { scale: { x: "shared" } } }
+      : { data: { values: D.pass_at_k }, width: chartWidth("c-passk"), height: 230, ...passkLayer };
+
+    const ablLevels = LEVEL_AXIS.filter(l => levelsPresent.includes(l));
+    const stackedLayer = (xField, xSort, xTitle, angled = false) => ({
+      layer: [
+        { mark: { type: "bar", width: 24 }, encoding: {
+            x: { field: xField, type: "nominal", sort: xSort, title: xTitle,
+                 axis: angled ? { labelAngle: -40, labelAlign: "right", labelBaseline: "middle" } : { labelAngle: 0 } },
+            y: { field: "value", type: "quantitative", stack: "zero", title: "share of tasks", scale: { domain: [0, 1] }, axis: { format: "%", tickCount: 5 } },
+            color: { field: "segment", type: "nominal", title: null, scale: segScale, sort: SEGMENTS },
+            order: { field: "segment_order", type: "quantitative" },
+            tooltip: [{ field: xField }, { field: "segment" }, { field: "value", title: "share", format: ".1%" }, { field: "final", title: "final pass rate", format: ".1%" }] } },
+        { transform: [{ filter: "datum.segment === 'Solved by a retry'" }],
+          mark: { type: "text", dy: -8, fontSize: 11, color: T.ink },
+          encoding: { x: { field: xField, type: "nominal", sort: xSort }, y: { field: "final", type: "quantitative" },
+                      text: { field: "final", format: ".0%" } } },
+      ],
+    });
+    const withOrder = (rows) => rows.map(r => ({ ...r, segment_order: SEGMENTS.indexOf(r.segment) }));
+    const ablData = withOrder(D.ablation.map(r => prompts.length > 1 ? { ...r, model: r.model + " · " + r.prompt_version } : r));
+    const ablFacets = [...new Set(ablData.map(r => r.model))].sort((a, b) => models.indexOf(a.split(" · ")[0]) - models.indexOf(b.split(" · ")[0]));
+    out["c-ablation"] = ablFacets.length > 1
+      ? { data: { values: ablData }, facet: { field: "model", title: null, sort: ablFacets }, columns: facetCols("c-ablation", ablFacets.length),
+          spec: { width: chartWidth("c-ablation", facetCols("c-ablation", ablFacets.length)), height: 210, ...stackedLayer("feedback_level", ablLevels, "feedback level", true) } }
+      : { data: { values: ablData }, width: chartWidth("c-ablation"), height: 230, ...stackedLayer("feedback_level", ablLevels, "feedback level") };
+
+    out["c-difficulty"] = { data: { values: withOrder(D.difficulty) }, width: chartWidth("c-difficulty"), height: 230,
+      ...stackedLayer("difficulty", DIFFS, "difficulty") };
+
+    const triesOrder = D.tries.map(t => t.bucket);
+    out["c-tries"] = { data: { values: D.tries }, width: chartWidth("c-tries"), height: 230,
+      layer: [
+        { mark: { type: "bar", width: 24, cornerRadiusTopLeft: 4, cornerRadiusTopRight: 4 }, encoding: {
+            x: { field: "bucket", type: "ordinal", sort: triesOrder, title: null, axis: { labelAngle: 0 } },
+            y: { field: "count", type: "quantitative", title: "tasks", axis: { tickMinStep: 1, format: "d" } },
+            color: { condition: { test: "datum.passed", value: T.s[0] }, value: T.neutral },
+            tooltip: [{ field: "bucket", title: "first passed" }, { field: "count", title: "tasks" }] } },
+        { mark: { type: "text", dy: -8, color: T.ink }, encoding: {
+            x: { field: "bucket", type: "ordinal", sort: triesOrder }, y: { field: "count", type: "quantitative" }, text: { field: "count" } } },
+      ] };
+
+    const states = [...new Set(D.transitions.flatMap(t => [t.from, t.to]))];
+    const toOrder = [...states.filter(s => s !== "passed"), "passed"].filter(s => D.transitions.some(t => t.to === s));
+    const maxCount = Math.max(1, ...D.transitions.map(t => t.count));
+    out["c-transitions"] = D.transitions.length ? { data: { values: D.transitions }, width: chartWidth("c-transitions"), height: { step: 34 },
+      layer: [
+        { mark: { type: "rect", cornerRadius: 3, stroke: T.surface, strokeWidth: 2 }, encoding: {
+            x: { field: "to", type: "nominal", sort: toOrder, title: "next attempt", axis: { labelAngle: 0, orient: "top" } },
+            y: { field: "from", type: "nominal", title: "previous attempt" },
+            color: { field: "count", type: "quantitative", title: "retries", scale: { range: T.seq, domainMin: 0 }, legend: null },
+            tooltip: [{ field: "from", title: "from" }, { field: "to", title: "to" }, { field: "count", title: "retries" }] } },
+        { mark: { type: "text", fontSize: 12 }, encoding: {
+            x: { field: "to", type: "nominal", sort: toOrder }, y: { field: "from", type: "nominal" }, text: { field: "count" },
+            color: { condition: { test: `datum.count > ${maxCount * 0.55}`, value: T.surface }, value: T.ink } } },
+      ] } : null;
+
+    const maxErr = Math.max(1, ...D.errors.map(e => e.count));
+    out["c-errors"] = D.errors.length ? { data: { values: D.errors }, width: chartWidth("c-errors"), height: { step: 30 },
+      layer: [
+        { mark: { type: "bar", height: 18, cornerRadiusTopRight: 4, cornerRadiusBottomRight: 4, color: T.s[0] }, encoding: {
+            y: { field: "error_type", type: "nominal", sort: "-x", title: null },
+            x: { field: "count", type: "quantitative", title: "failed attempts", scale: { domain: [0, Math.ceil(maxErr * 1.15)], nice: false },
+                 axis: { tickMinStep: 1, format: "d" } },
+            tooltip: [{ field: "error_type", title: "verdict" }, { field: "count", title: "attempts" }] } },
+        { mark: { type: "text", align: "left", dx: 5, color: T.ink }, encoding: {
+            y: { field: "error_type", type: "nominal", sort: "-x" }, x: { field: "count", type: "quantitative" }, text: { field: "count" } } },
+      ] } : null;
+
+    const configOrder = D.configs.map(c => c.config);
+    const diffRank = { easy: 0, medium: 1, hard: 2 };
+    const taskOrder = [...new Map(D.grid.map(g => [g.task_id, g.difficulty])).entries()]
+      .sort((a, b) => (diffRank[a[1]] ?? 9) - (diffRank[b[1]] ?? 9) || a[0].localeCompare(b[0])).map(e => e[0]);
+    const gridData = D.grid.map(g => ({ ...g, label: g.solved === 0 ? "✕" : (g.mean_tries === null ? "" : g.mean_tries.toFixed(g.runs > 1 ? 1 : 0)),
+                                         task_label: `${g.task_id} (${g.difficulty[0]})` }));
+    const taskLabelOrder = taskOrder.map(t => { const g = D.grid.find(x => x.task_id === t); return `${t} (${g.difficulty[0]})`; });
+    const cellW = Math.max(44, Math.min(120, Math.floor((chartWidth("c-grid") - 200) / Math.max(1, configOrder.length))));
+    out["c-grid"] = { data: { values: gridData }, width: { step: cellW }, height: { step: 22 },
+      layer: [
+        { mark: { type: "rect", cornerRadius: 3, stroke: T.surface, strokeWidth: 2 }, encoding: {
+            x: { field: "config", type: "nominal", sort: configOrder, title: null, axis: { orient: "top", labelAngle: -35, labelAlign: "left", labelLimit: 220 } },
+            y: { field: "task_label", type: "nominal", sort: taskLabelOrder, title: null, axis: { labelLimit: 220 } },
+            color: { field: "solve_rate", type: "quantitative", title: "solved (share of seeds)", scale: { domain: [0, 1], range: T.seq },
+                     legend: { orient: "bottom", format: "%", gradientLength: 160 } },
+            tooltip: [{ field: "task_id", title: "task" }, { field: "difficulty" }, { field: "config", title: "configuration" },
+                      { field: "solve_rate", title: "solved", format: ".0%" }, { field: "mean_tries", title: "mean tries", format: ".2f" }] } },
+        { mark: { type: "text", fontSize: 11 }, encoding: {
+            x: { field: "config", type: "nominal", sort: configOrder }, y: { field: "task_label", type: "nominal", sort: taskLabelOrder },
+            text: { field: "label" }, color: { condition: { test: "datum.solve_rate > 0.55", value: T.surface }, value: T.ink } } },
+      ] };
+
+    return out;
+  }
+
+  const views = [];
+  function renderAll() {
+    if (typeof vegaEmbed === "undefined") {
+      document.querySelectorAll(".chart.loading").forEach(n => { n.classList.remove("loading"); n.textContent = "Charts need the Vega libraries from cdn.jsdelivr.net; the data tables below each chart hold every value."; });
+      return;
+    }
+    views.splice(0).forEach(v => v.finalize && v.finalize());
+    const T = tokens();
+    const cfg = vlConfig(T);
+    const S = specs(T);
+    for (const [id, spec] of Object.entries(S)) {
+      const node = document.getElementById(id);
+      node.classList.remove("loading");
+      if (!spec) { node.textContent = "No data for this chart in the focus run."; continue; }
+      const full = { $schema: "https://vega.github.io/schema/vega-lite/v5.json", ...spec, config: cfg };
+      vegaEmbed(node, full, { actions: false, renderer: "svg" }).then(r => views.push(r)).catch(err => { node.textContent = "Chart failed to render: " + err.message; });
+    }
+  }
+  renderAll();
+  // Re-render when the theme or the viewport width changes.
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll);
+  new MutationObserver(renderAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  let resizeTimer;
+  window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderAll, 200); });
+})();
+</script>

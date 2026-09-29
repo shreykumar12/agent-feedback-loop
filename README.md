@@ -118,6 +118,10 @@ pytest
 python main.py validate-tasks
 ```
 
+![Streamlit dashboard](docs/img/dashboard-overview.png)
+
+The dashboard has six tabs: run overview, configuration leaderboard and ablation, regression comparison, per-attempt task drill-down, per-task solve matrix, and code-quality metrics.
+
 Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Ollama, vLLM): set `LLM_BASE_URL` and `LLM_API_KEY`. The sandbox limits, try budget and paths are all env-overridable (see `.env.example`).
 
 ## Metrics
@@ -180,7 +184,7 @@ VERDICT: REGRESSION
 
 ## Testing
 
-`pytest` runs over 100 tests in about 15 s, with no API key, so CI runs them on every push:
+`pytest` runs 114 tests in about 40 s, with no API key, so CI runs them on every push:
 - **Sandbox:** timeouts that `except Exception` can't swallow, the global kill backstop, memory limit, secret stripping, isolation between runs, `sys.exit`.
 - **Feedback:** content at each level, truncation, and the hidden-test policy.
 - **Graph:** a scripted fake agent covers first-try pass, pass after retries, the max-tries stop, and that retry prompts receive the previous code and feedback.

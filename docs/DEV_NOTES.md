@@ -77,3 +77,27 @@ Optional: LLM judge for readability/approach only, on passing code only.
 - Noise: an A/A comparison (same config, seed 0 vs 1) trips the pass@1 threshold
   on a 20-task suite. => repeated-run group comparison with permutation test and
   pooled (seed, task) McNemar. full->minimal: 14 pairs lost / 0 gained, p=1.2e-4.
+
+## Environment notes for previews
+- cdn.jsdelivr.net and fonts.googleapis.com are blocked by this container's egress
+  policy (403). The report loads Vega from jsdelivr at view time (fine for real
+  viewers / artifacts). For local screenshots, vega/vega-lite/vega-embed were
+  installed from the npm registry (allowed) into the scratchpad and served via
+  Playwright request interception. Chromium: /opt/pw-browsers/chromium-1194.
+- The real LLM path is verified against a local fake OpenAI-compatible server
+  (tests/test_llm_integration.py) since no key / Gemini access exists here.
+
+## Status / branch plan
+Stacked branches (each = one milestone commit on top of the previous):
+  claude/01-sandbox -> 02-task-suite -> 03-agent-loop -> 04-measurement ->
+  05-statistics -> 06-report -> 07-llm-integration-tests -> 08-docs-ci -> 09-dashboard
+Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
+
+## Dashboard review (done by me after the subagent built it; headless Chromium screenshots)
+- Fixed: st.altair_chart fits legend+axes inside `height`, so nominal-y charts
+  collapsed their bands and bottom legends squashed plots -> alt.Step heights for
+  categorical charts, legends on top with extra height, tiles in a 3x2 grid,
+  faceted pass@k instead of tiny columns, labelOverlap=False on angled axes,
+  regression tab defaults to best vs worst configuration, feedback-level colors
+  aligned with the HTML report (full = slot 1).
+- Test suite: 114 tests, ~40 s locally (dashboard AppTests dominate).

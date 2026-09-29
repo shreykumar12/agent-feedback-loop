@@ -1,13 +1,6 @@
-# WHY THIS FILE EXISTS:
-#   Build step 8: CI signals production habits and proves the project works
-#   on a clean machine, not just yours.
-#
-# WHAT IT NEEDS:
-#   - Run on push + pull_request to main.
-#   - Set up Python, install requirements.txt, run pytest.
-#   - Unit tests must NOT require GEMINI_API_KEY (fake agent in test_graph.py).
-#   - Optional later: lint step (ruff), and a manually-triggered job
-#     (workflow_dispatch) that runs a tiny suite with a repo secret.
+# CI proves the project works on a clean machine. Unit tests never need an API
+# key: the loop is tested with a scripted fake agent and the offline simulator.
+# A manually triggered job runs a small real-model suite when a key secret exists.
 
 name: CI
 
@@ -16,6 +9,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model for the live eval job"
+        default: "gemini-2.5-flash"
 
 jobs:
   test:
@@ -25,5 +23,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt ruff
+      - name: Lint
+        run: ruff check .
+      - name: Unit tests
+        run: pytest
+      - name: Task suite validity (mutation score)
+        run: python main.py validate-tasks
+      - name: Offline end-to-end smoke run
+        env:
+          AGENT_EVAL_DB: ${{ runner.temp }}/ci.db
+        run: |
+          python main.py run --model sim-strong --seeds 2
+          python main.py show latest
+          python main.py compare latest~1 latest || true
+          python main.py report --out ${{ runner.temp }}/report.html
+
+  live-eval:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
       - run: pip install -r requirements.txt
-      - run: pytest
+      - name: Run a small real-model suite
+        if: env.GEMINI_API_KEY != ''
+        run: |
+          python main.py run --model ${{ inputs.model }} --tasks caesar_shift rounded_mean merge_intervals rank_players lru_simulate
+          python main.py show latest
+          python main.py report --out report.html
+      - uses: actions/upload-artifact@v4
+        if: env.GEMINI_API_KEY != ''
+        with:
+          name: live-eval-report
+          path: report.html

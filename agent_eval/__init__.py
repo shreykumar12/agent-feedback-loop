@@ -1,8 +1,21 @@
-# WHY THIS FILE EXISTS:
-#   Marks `agent_eval/` as a Python package so modules can import each other
-#   (e.g. `from agent_eval.sandbox import run_tests`) and so tests, the CLI,
-#   and the Streamlit dashboard can all share the same code.
-#
-# WHAT IT NEEDS:
-#   Nothing required. Optionally re-export the few public entry points
-#   (e.g. `run_task`, `run_suite`) once they exist, to keep imports short.
+"""AgentEval: a self-correcting coding agent with deterministic evaluation.
+
+The public entry points are ``run_task`` (one task through the retry loop) and
+``run_suite`` (a whole suite as one stored, comparable run). They are imported
+lazily so that light modules (sandbox, feedback, metrics) stay importable
+without pulling in LangGraph.
+"""
+
+__all__ = ["run_task", "run_suite"]
+
+
+def __getattr__(name):
+    if name == "run_task":
+        from agent_eval.graph import run_task
+
+        return run_task
+    if name == "run_suite":
+        from agent_eval.run_suite import run_suite
+
+        return run_suite
+    raise AttributeError(name)

@@ -51,3 +51,14 @@ Optional: LLM judge for readability/approach only, on passing code only.
   `claude/sleepy-noether-1nmbe3`, then create stacked branches `claude/0N-<name>`
   pointing at each milestone commit. Push all. NO merges, NO PRs. Final message:
   merge order + how to test.
+
+## Task suite (built by a subagent, verified by `python main.py validate-tasks`)
+- 20 original tasks (6 easy / 8 medium / 6 hard), 164 hidden tests, 88 mutants,
+  mutation score 100%, suite hash e0aacf5367b3 (changes if prompts/tests change).
+- Mutant verdict mix: 64 wrong_answer, 19 runtime_error, 2 syntax, 2 timeout, 1 import.
+  Each loadable mutant fails 1-3 tests (subtle bugs -> retries are informative).
+- Trap tasks (non-obvious conventions): rounded_mean (half away from zero),
+  merge_intervals (half-open), rank_players (competition ranking + case-sensitive ties),
+  summarize_ranges (runs of 2 are not ranges), lru_simulate (put refreshes recency),
+  evaluate_expression (/ truncates toward zero).
+- Generator script lived in the session scratchpad (not committed); tasks.json is the source of truth.

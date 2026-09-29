@@ -5,6 +5,7 @@
     python main.py runs
     python main.py show latest
     python main.py compare <baseline> <candidate>      # exit 1 on regression
+    python main.py compare @sim-strong/full @sim-weak/full   # all seeds, permutation test
     python main.py ablation --models sim-base --levels none minimal names full --seeds 3
     python main.py report latest --out reports/latest.html
     python main.py attempts latest <task_id>
@@ -122,9 +123,15 @@ def cmd_show(args) -> int:
 def cmd_compare(args) -> int:
     from agent_eval import regression, storage
 
-    comparison = regression.compare_runs(storage.resolve_run_id(args.baseline),
-                                         storage.resolve_run_id(args.candidate))
-    print(json.dumps(comparison, indent=2, default=str) if args.json else regression.format_report(comparison))
+    base_ids = storage.resolve_run_refs(args.baseline)
+    cand_ids = storage.resolve_run_refs(args.candidate)
+    if len(base_ids) == 1 and len(cand_ids) == 1:
+        comparison = regression.compare_runs(base_ids[0], cand_ids[0])
+        text = regression.format_report(comparison)
+    else:
+        comparison = regression.compare_groups(base_ids, cand_ids)
+        text = regression.format_group_report(comparison)
+    print(json.dumps(comparison, indent=2, default=str) if args.json else text)
     return 1 if comparison["regression"] else 0
 
 
@@ -259,7 +266,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("compare", help="regression report (exit 1 if flagged)")
+    p = sub.add_parser("compare", help="regression report (exit 1 if flagged)",
+                       description="Each side is a run id/prefix, 'latest', a comma-separated list of runs, "
+                                   "or a config selector @model[/feedback[/prompt]] (all its seeds). "
+                                   "Multiple runs per side -> repeated-run comparison with a permutation test.")
     p.add_argument("baseline")
     p.add_argument("candidate")
     p.add_argument("--json", action="store_true")

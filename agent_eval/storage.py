@@ -223,6 +223,22 @@ def resolve_run_id(ref: str) -> str:
     raise KeyError(f"{ref!r} is ambiguous ({len(matches)} runs match)")
 
 
+def resolve_run_refs(ref: str) -> list[str]:
+    """Resolve a run reference that may name several runs:
+    comma-separated ids/prefixes, or a config selector ``@model[/feedback[/prompt]]``
+    (all stored runs of that configuration, e.g. every seed)."""
+    if ref.startswith("@"):
+        parts = ref[1:].split("/")
+        keys = ("model", "feedback_level", "prompt_version")
+        wanted = dict(zip(keys, parts, strict=False))
+        matches = [r["run_id"] for r in list_runs()
+                   if all(r[k] == v for k, v in wanted.items() if v)]
+        if not matches:
+            raise KeyError(f"no runs match selector {ref!r}")
+        return matches
+    return [resolve_run_id(part.strip()) for part in ref.split(",") if part.strip()]
+
+
 def get_results(run_id: str) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(

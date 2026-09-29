@@ -11,18 +11,21 @@ one of those programs:
 
   * First attempt: correct with probability ``first_try[difficulty]`` of the
     model profile, otherwise a mutant (earlier mutants are likelier).
-  * Retry: it reads the feedback *text* it was given, and how much it can do
-    depends on what that text contains:
+  * Retry: a failure is evidence the task is hard *for this model*, so a
+    blind retry succeeds with only ``p_blind = first_try * BLIND_FACTOR``.
+    Feedback can only add to that floor; how much depends on what the
+    feedback *text* contains:
       - failing assertion lines ("full" feedback): it turns each shown
         assertion into a probe test and runs every untried candidate against
         the probes in the sandbox, discarding candidates that fail them --
         a genuine use of the feedback's information. It then submits the
-        correct program with probability ``repair`` (else another survivor).
-      - module-level diagnosis (syntax/import error explained): fixes with
-        probability ``repair``.
-      - failing test names only: fixes with probability ``repair * NAMES_FACTOR``.
-      - no usable information ("minimal"/"none"): resamples as if from scratch,
-        slightly anchored to the previous answer.
+        correct program with probability ``p_blind + (1 - p_blind) * repair``
+        (else another surviving candidate).
+      - module-level diagnosis (syntax/import error explained): same
+        probability, without probes.
+      - failing test names only: ``p_blind + (1 - p_blind) * repair * NAMES_FACTOR``.
+      - no usable information ("minimal"/"none"): ``p_blind``, and it may
+        resubmit its previous answer unchanged (a "stuck" retry).
 
 Token counts are estimated from the real rendered prompts (~4 chars/token);
 latency is simulated (not slept) so a suite run takes seconds.
@@ -38,7 +41,8 @@ from dataclasses import dataclass
 from agent_eval.models import Task
 
 NAMES_FACTOR = 0.45
-BLIND_FACTOR = 0.85
+BLIND_FACTOR = 0.5
+STUCK_PROB = 0.35
 CHARS_PER_TOKEN = 4
 
 
@@ -122,35 +126,36 @@ def choose_program(model: str, task: Task, feedback: str | None, history: list[s
         return _pick_mutant(rng, mutants, set()) or correct
 
     tried = set(history)
+    p_blind = p_first * BLIND_FACTOR
+    p_informed = p_blind + (1 - p_blind) * profile.repair
     probes = extract_probes(feedback)
     if probes:
         untried = [c for c in [correct, *mutants] if c not in tried]
         survivors = _probe_survivors(task, untried, probes) if untried else []
-        if correct in survivors and (rng.random() < profile.repair or len(survivors) == 1):
+        if correct in survivors and (rng.random() < p_informed or len(survivors) == 1):
             return correct
         others = [s for s in survivors if s != correct]
         if others:
             return rng.choice(others)
-        return correct if rng.random() < profile.repair else (_pick_mutant(rng, mutants, set()) or correct)
+        return correct if rng.random() < p_informed else (_pick_mutant(rng, mutants, set()) or correct)
 
     if "Only the Python standard library" in feedback or "not valid Python" in feedback \
             or "function is not defined" in feedback or "at import time" in feedback:
-        if rng.random() < profile.repair:
+        if rng.random() < p_informed:
             return correct
         return _pick_mutant(rng, mutants, tried) or correct
 
     if "Failing tests:" in feedback:  # names-level feedback
-        if rng.random() < profile.repair * NAMES_FACTOR:
+        if rng.random() < p_blind + (1 - p_blind) * profile.repair * NAMES_FACTOR:
             return correct
         return _pick_mutant(rng, mutants, tried) or history[-1]
 
-    # No usable information: resample, anchored to the previous answer.
-    if rng.random() < p_first * BLIND_FACTOR:
+    # No usable information: a blind retry, often anchored to the previous answer.
+    if rng.random() < p_blind:
         return correct
-    if history and rng.random() < 0.35:
+    if history and rng.random() < STUCK_PROB:
         return history[-1]
     return _pick_mutant(rng, mutants, set()) or correct
-
 
 def respond(model: str, task: Task, system: str, user: str, *, feedback: str | None,
             history: list[str], attempt_number: int, seed: int) -> tuple[str, int, int, float]:

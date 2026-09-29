@@ -94,3 +94,64 @@ def test_bootstrap_ci_contains_observed_delta():
 def test_report_formats(two_runs):
     text = regression.format_report(two_runs)
     assert "REGRESSION" in text and "t3" in text and "McNemar" in text
+
+
+def test_first_try_regression_is_reported(tmp_db):
+    # Final pass rate identical; the candidate only gets there via retries.
+    store_run("a", {"t1": [True], "t2": [True], "t3": [True]})
+    store_run("b", {"t1": [False, True], "t2": [False, True], "t3": [False, True]}, seed=1)
+    comparison = regression.compare_runs("a", "b")
+    assert comparison["aggregate"]["pass_rate"]["delta"] == 0
+    assert comparison["first_try_lost"] == ["t1", "t2", "t3"]
+    assert comparison["mcnemar_p_at_1"] == pytest.approx(0.25)
+    assert comparison["regression"]  # pass@1 dropped 100%
+
+
+def test_permutation_test():
+    assert regression.permutation_test([1, 1, 1], [1, 1, 1]) == 1.0
+    # fully separated groups of 4: only the observed split and its mirror are as extreme
+    assert regression.permutation_test([0.9, 0.95, 1.0, 0.92], [0.1, 0.2, 0.15, 0.05]) == pytest.approx(2 / 70)
+    assert regression.permutation_test([], [1.0]) == 1.0
+
+
+def _seeded_group(prefix, outcomes_by_seed, model):
+    ids = []
+    for seed, outcomes in enumerate(outcomes_by_seed):
+        run_id = f"{prefix}{seed}"
+        store_run(run_id, outcomes, model=model, seed=seed)
+        ids.append(run_id)
+    return ids
+
+
+def test_group_comparison_pairs_by_seed(tmp_db):
+    good = {f"t{i}": [True] for i in range(8)}
+    bad = {f"t{i}": ([True] if i < 2 else [False, False, False]) for i in range(8)}
+    base = _seeded_group("b", [good] * 3, model="strong")
+    cand = _seeded_group("c", [bad] * 3, model="weak")
+    comparison = regression.compare_groups(base, cand)
+    assert comparison["paired"]["num_pairs"] == 24
+    assert comparison["paired"]["pass_rate"]["lost"] == 18
+    assert comparison["regression"]
+    assert "paired McNemar" in comparison["reasons"][0]
+    assert {t["task_id"] for t in comparison["degraded_tasks"]} == {f"t{i}" for i in range(2, 8)}
+    assert "REGRESSION" in regression.format_group_report(comparison)
+
+
+def test_group_comparison_of_identical_configs_is_clean(tmp_db):
+    same = {f"t{i}": [True] for i in range(5)}
+    base = _seeded_group("x", [same] * 3, model="m")
+    cand = _seeded_group("y", [same] * 3, model="m")
+    comparison = regression.compare_groups(base, cand)
+    assert not comparison["regression"]
+    assert comparison["metrics"]["pass_rate"]["delta"] == 0
+
+
+def test_config_selector_resolves_all_seeds(tmp_db):
+    from agent_eval import storage
+
+    _seeded_group("s", [{"t1": [True]}] * 3, model="sel-model")
+    assert len(storage.resolve_run_refs("@sel-model/full")) == 3
+    assert len(storage.resolve_run_refs("@sel-model")) == 3
+    assert storage.resolve_run_refs("s0,s1") == ["s0", "s1"]
+    with pytest.raises(KeyError):
+        storage.resolve_run_refs("@nope")

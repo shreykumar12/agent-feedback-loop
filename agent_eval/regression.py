@@ -83,7 +83,16 @@ def compare_results(baseline_run: dict, candidate_run: dict,
                     "mean_tries_to_pass", "tokens_in", "tokens_out", "est_cost_usd",
                     "latency_total_s")
     }
+    # First-try outcomes are paired too, and are far more sensitive: the retry
+    # loop can rescue a weaker model's final pass rate while pass@1 collapses.
+    base_by_task, cand_by_task = metrics.group_attempts(base_att), metrics.group_attempts(cand_att)
+    base_first = {t: metrics.first_pass_attempt(base_by_task.get(t, [])) == 1 for t in common}
+    cand_first = {t: metrics.first_pass_attempt(cand_by_task.get(t, [])) == 1 for t in common}
+    first_try_lost = [t for t in common if base_first[t] and not cand_first[t]]
+    first_try_gained = [t for t in common if not base_first[t] and cand_first[t]]
+
     p_value = mcnemar_exact(len(newly_failing), len(newly_passing))
+    p_value_at_1 = mcnemar_exact(len(first_try_lost), len(first_try_gained))
     ci = paired_bootstrap_ci([int(base[t]["passed"]) for t in common],
                              [int(cand[t]["passed"]) for t in common])
 
@@ -124,9 +133,13 @@ def compare_results(baseline_run: dict, candidate_run: dict,
         "newly_passing": newly_passing,
         "more_tries": more_tries,
         "fewer_tries": fewer_tries,
+        "first_try_lost": first_try_lost,
+        "first_try_gained": first_try_gained,
         "mcnemar_p": p_value,
+        "mcnemar_p_at_1": p_value_at_1,
         "pass_rate_delta_ci95": ci,
         "significant": p_value < SIGNIFICANCE_LEVEL,
+        "significant_at_1": p_value_at_1 < SIGNIFICANCE_LEVEL,
         "regression": bool(reasons),
         "reasons": reasons,
         "warnings": warnings,
@@ -199,8 +212,11 @@ def format_report(comparison: dict) -> str:
     lines += [
         "",
         f"pass-rate delta 95% CI (paired bootstrap): [{lo:+.1%}, {hi:+.1%}]",
-        f"McNemar exact p-value: {comparison['mcnemar_p']:.3f} "
+        f"McNemar exact p (final pass): {comparison['mcnemar_p']:.3f} "
         f"({'significant' if comparison['significant'] else 'not significant'} at {SIGNIFICANCE_LEVEL})",
+        f"McNemar exact p (pass@1):     {comparison['mcnemar_p_at_1']:.3f} "
+        f"({'significant' if comparison['significant_at_1'] else 'not significant'}; "
+        f"first-try lost {len(comparison['first_try_lost'])}, gained {len(comparison['first_try_gained'])})",
         "",
         f"newly failing ({len(comparison['newly_failing'])}): {', '.join(comparison['newly_failing']) or '-'}",
         f"newly passing ({len(comparison['newly_passing'])}): {', '.join(comparison['newly_passing']) or '-'}",
@@ -210,9 +226,199 @@ def format_report(comparison: dict) -> str:
     ]
     if comparison["regression"]:
         lines.append("VERDICT: REGRESSION  -- " + "; ".join(comparison["reasons"]))
-        if not comparison["significant"]:
-            lines.append("         (not statistically significant: consider repeated runs with --seeds)")
+        if not (comparison["significant"] or comparison["significant_at_1"]):
+            lines.append("         (not statistically significant: confirm with repeated runs, e.g.")
+            lines.append("          `run --seeds 5` then `compare @model/feedback @model/feedback`)")
     else:
         lines.append("VERDICT: no regression")
     lines.append("=" * 64)
+    return "\n".join(lines)
+
+
+# --- repeated-run (group) comparison -----------------------------------------
+# Single-run comparisons on a 20-task suite are noisy: an A/A comparison of the
+# same configuration with two seeds can cross the thresholds above. Comparing
+# groups of seeds with an exact permutation test separates real regressions
+# from sampling noise.
+
+def permutation_test(a: list[float], b: list[float], max_exact: int = 20000, seed: int = 0) -> float:
+    """Two-sided permutation p-value for mean(b) - mean(a)."""
+    from itertools import combinations
+
+    if not a or not b:
+        return 1.0
+    pooled = a + b
+    n_a = len(a)
+    observed = abs(sum(b) / len(b) - sum(a) / n_a)
+    total = sum(pooled)
+
+    def stat(idx_a) -> float:
+        sum_a = sum(pooled[i] for i in idx_a)
+        return abs((total - sum_a) / len(b) - sum_a / n_a)
+
+    eps = 1e-12
+    if math.comb(len(pooled), n_a) <= max_exact:
+        splits = list(combinations(range(len(pooled)), n_a))
+        hits = sum(1 for idx in splits if stat(idx) >= observed - eps)
+        return hits / len(splits)
+    rng = random.Random(seed)
+    samples = max_exact
+    hits = sum(1 for _ in range(samples) if stat(rng.sample(range(len(pooled)), n_a)) >= observed - eps)
+    return (hits + 1) / (samples + 1)
+
+
+def _mean(xs):
+    return sum(xs) / len(xs) if xs else None
+
+
+def _std(xs):
+    if len(xs) < 2:
+        return 0.0
+    m = _mean(xs)
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+
+def compare_groups(baseline_ids: list[str], candidate_ids: list[str]) -> dict:
+    groups = {}
+    for name, ids in (("baseline", baseline_ids), ("candidate", candidate_ids)):
+        runs, summaries, per_task_pass, per_task_first, by_seed = [], [], {}, {}, {}
+        for rid in ids:
+            run = storage.get_run(rid)
+            if run is None:
+                raise KeyError(f"unknown run {rid!r}")
+            results, attempts = storage.get_results(rid), storage.get_attempts(rid)
+            runs.append(run)
+            summaries.append(metrics.summarize_run(run, results, attempts))
+            by_task = metrics.group_attempts(attempts)
+            for r in results:
+                first = int(metrics.first_pass_attempt(by_task.get(r["task_id"], [])) == 1)
+                per_task_pass.setdefault(r["task_id"], []).append(int(r["passed"]))
+                per_task_first.setdefault(r["task_id"], []).append(first)
+                by_seed[(run["seed"], r["task_id"])] = (int(r["passed"]), first)
+        groups[name] = {"runs": runs, "summaries": summaries, "pass": per_task_pass,
+                        "first": per_task_first, "by_seed": by_seed}
+
+    b, c = groups["baseline"], groups["candidate"]
+    common = sorted(b["pass"].keys() & c["pass"].keys())
+    out_metrics = {}
+    for key in ("pass_rate", "pass_at_1", "self_correction_lift", "recovery_rate", "mean_tries_to_pass"):
+        xs = [s[key] for s in b["summaries"] if s[key] is not None]
+        ys = [s[key] for s in c["summaries"] if s[key] is not None]
+        out_metrics[key] = {
+            "baseline_mean": _mean(xs), "baseline_std": _std(xs),
+            "candidate_mean": _mean(ys), "candidate_std": _std(ys),
+            "delta": (_mean(ys) - _mean(xs)) if xs and ys else None,
+            "p_value": permutation_test(xs, ys),
+        }
+
+    degraded, improved = [], []
+    for t in common:
+        rate_b, rate_c = _mean(b["pass"][t]), _mean(c["pass"][t])
+        first_b, first_c = _mean(b["first"][t]), _mean(c["first"][t])
+        row = {"task_id": t, "baseline_solve": rate_b, "candidate_solve": rate_c,
+               "baseline_first": first_b, "candidate_first": first_c}
+        if rate_c - rate_b <= -0.5 or first_c - first_b <= -0.5:
+            degraded.append(row)
+        elif rate_c - rate_b >= 0.5 or first_c - first_b >= 0.5:
+            improved.append(row)
+
+    # Same seeds on both sides -> outcomes pair up by (seed, task): a pooled
+    # McNemar test over all pairs is far more powerful than comparing run means.
+    paired = None
+    seeds_b = sorted(r["seed"] for r in b["runs"])
+    seeds_c = sorted(r["seed"] for r in c["runs"])
+    if seeds_b == seeds_c and len(set(seeds_b)) == len(seeds_b):
+        keys = sorted(b["by_seed"].keys() & c["by_seed"].keys())
+        paired = {"num_pairs": len(keys)}
+        for idx, key in ((0, "pass_rate"), (1, "pass_at_1")):
+            lost = sum(1 for k in keys if b["by_seed"][k][idx] and not c["by_seed"][k][idx])
+            gained = sum(1 for k in keys if not b["by_seed"][k][idx] and c["by_seed"][k][idx])
+            paired[key] = {"lost": lost, "gained": gained, "p_value": mcnemar_exact(lost, gained)}
+            out_metrics[key]["paired_p_value"] = paired[key]["p_value"]
+
+    reasons = []
+    for key, threshold in (("pass_rate", PASS_RATE_DROP_THRESHOLD), ("pass_at_1", PASS_AT_1_DROP_THRESHOLD)):
+        m = out_metrics[key]
+        p_used = m.get("paired_p_value", m["p_value"])
+        test = "paired McNemar" if "paired_p_value" in m else "permutation"
+        if m["delta"] is not None and m["delta"] < -threshold and p_used < SIGNIFICANCE_LEVEL:
+            reasons.append(f"{key} dropped {-m['delta']:.1%} (> {threshold:.0%}, {test} p={p_used:.3g})")
+
+    warnings = []
+    for name in ("baseline", "candidate"):
+        runs = groups[name]["runs"]
+        configs = {(r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"]) for r in runs}
+        if len(configs) > 1:
+            warnings.append(f"{name} group mixes {len(configs)} configurations")
+        if len({r["seed"] for r in runs}) < len(runs):
+            warnings.append(f"{name} group repeats a seed (runs are not independent samples)")
+    hashes = {r["suite_hash"] for g in groups.values() for r in g["runs"] if r.get("suite_hash")}
+    if len(hashes) > 1:
+        warnings.append("suite hash differs across runs: prompts or tests changed")
+    if min(len(baseline_ids), len(candidate_ids)) < 3:
+        warnings.append("fewer than 3 runs per group: the permutation test has little power")
+
+    def describe(runs):
+        r = runs[0]
+        return {"model": r["model"], "prompt_version": r["prompt_version"], "feedback_level": r["feedback_level"],
+                "max_tries": r["max_tries"], "run_ids": [x["run_id"] for x in runs],
+                "seeds": sorted(x["seed"] for x in runs)}
+
+    return {
+        "baseline": describe(b["runs"]),
+        "candidate": describe(c["runs"]),
+        "num_common": len(common),
+        "metrics": out_metrics,
+        "paired": paired,
+        "degraded_tasks": degraded,
+        "improved_tasks": improved,
+        "regression": bool(reasons),
+        "reasons": reasons,
+        "warnings": warnings,
+    }
+
+
+def format_group_report(comparison: dict) -> str:
+    b, c = comparison["baseline"], comparison["candidate"]
+    lines = [
+        "=" * 72,
+        "REGRESSION REPORT (repeated runs)",
+        "=" * 72,
+        f"baseline : {b['model']} / {b['prompt_version']} / fb={b['feedback_level']} / k={b['max_tries']}  ({len(b['run_ids'])} runs, seeds {b['seeds']})",
+        f"candidate: {c['model']} / {c['prompt_version']} / fb={c['feedback_level']} / k={c['max_tries']}  ({len(c['run_ids'])} runs, seeds {c['seeds']})",
+        f"tasks compared: {comparison['num_common']}",
+    ]
+    lines += [f"WARNING: {w}" for w in comparison["warnings"]]
+    lines += ["", f"{'metric':<22}{'baseline':>18}{'candidate':>18}{'delta':>10}{'perm p':>9}"]
+    for key, m in comparison["metrics"].items():
+        is_pct = key != "mean_tries_to_pass"
+
+        def cell(mean, std, pct=is_pct):
+            if mean is None:
+                return "-"
+            return f"{mean:.1%} ± {std:.1%}" if pct else f"{mean:.2f} ± {std:.2f}"
+
+        d = m["delta"]
+        dtxt = "-" if d is None else (f"{d:+.1%}" if is_pct else f"{d:+.2f}")
+        lines.append(f"{key:<22}{cell(m['baseline_mean'], m['baseline_std']):>18}"
+                     f"{cell(m['candidate_mean'], m['candidate_std']):>18}{dtxt:>10}{m['p_value']:>9.3f}")
+    if comparison.get("paired"):
+        pr = comparison["paired"]
+        lines.append("")
+        lines.append(f"paired by (seed, task), {pr['num_pairs']} pairs:")
+        for key in ("pass_rate", "pass_at_1"):
+            lines.append(f"  {key:<12} lost {pr[key]['lost']:>3}, gained {pr[key]['gained']:>3}, "
+                         f"McNemar p = {pr[key]['p_value']:.3g}")
+    lines.append("")
+    lines.append(f"degraded tasks ({len(comparison['degraded_tasks'])}): " + (", ".join(
+        f"{t['task_id']} (solve {t['baseline_solve']:.0%}->{t['candidate_solve']:.0%}, "
+        f"first-try {t['baseline_first']:.0%}->{t['candidate_first']:.0%})" for t in comparison["degraded_tasks"]) or "-"))
+    lines.append(f"improved tasks ({len(comparison['improved_tasks'])}): " + (", ".join(
+        t["task_id"] for t in comparison["improved_tasks"]) or "-"))
+    lines.append("")
+    if comparison["regression"]:
+        lines.append("VERDICT: REGRESSION  -- " + "; ".join(comparison["reasons"]))
+    else:
+        lines.append("VERDICT: no statistically significant regression")
+    lines.append("=" * 72)
     return "\n".join(lines)

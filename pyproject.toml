@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: runs the loop over many tasks (a few seconds)"]
 
 [tool.ruff]
 line-length = 120

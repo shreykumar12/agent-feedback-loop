@@ -102,3 +102,70 @@ def test_missing_key_is_a_clear_agent_error(monkeypatch):
     agent._chat_client.cache_clear()
     with pytest.raises(agent.AgentError, match="API key"):
         agent.generate(TASK, model="gemini-2.5-flash")
+
+
+class FlakyOpenAI(FakeOpenAI):
+    """Answers 429 for the first `fail_first` requests, then behaves normally."""
+    fail_first = 0
+    body = {}
+
+    def do_POST(self):
+        if FlakyOpenAI.fail_first > 0:
+            FlakyOpenAI.fail_first -= 1
+            self.rfile.read(int(self.headers["Content-Length"]))
+            data = json.dumps(FlakyOpenAI.body).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        super().do_POST()
+
+
+@pytest.fixture
+def flaky_llm(monkeypatch):
+    server = HTTPServer(("127.0.0.1", 0), FlakyOpenAI)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(config, "LLM_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
+    monkeypatch.setattr(config, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(config, "LLM_MAX_RETRIES", 0)  # exercise our own retry, not the SDK's
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    sleeps = []
+    monkeypatch.setattr(agent.time, "sleep", lambda s: sleeps.append(s))
+    agent._chat_client.cache_clear()
+    yield sleeps
+    server.shutdown()
+    agent._chat_client.cache_clear()
+
+
+def test_per_minute_rate_limit_waits_and_retries(flaky_llm):
+    FlakyOpenAI.fail_first = 2
+    FlakyOpenAI.body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                                  "message": "Quota exceeded for metric GenerateRequestsPerMinute. Please retry in 7.5s."}}
+    gen = agent.generate(TASK, model="fake-model")
+    assert "def add" in gen.code
+    assert flaky_llm[:2] == [8.5, 8.5]  # waited as long as the provider asked (+1s)
+
+
+def test_daily_quota_fails_fast_with_hint(flaky_llm):
+    FlakyOpenAI.fail_first = 1
+    FlakyOpenAI.body = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                                  "message": "Quota exceeded for metric GenerateRequestsPerDay."}}
+    with pytest.raises(agent.AgentError) as info:
+        agent.generate(TASK, model="fake-model")
+    assert flaky_llm == []  # no pointless waiting on a daily cap
+    assert "daily quota" in agent.hint_for(info.value)
+
+
+def test_rpm_limiter_spaces_calls(monkeypatch):
+    clock = [100.0]
+    slept = []
+    monkeypatch.setattr(agent.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(agent.time, "sleep", lambda s: slept.append(s))
+    limiter = agent._RateLimiter()
+    for _ in range(3):
+        limiter.wait(rpm=6)  # one call every 10 s
+    assert slept == [10.0, 20.0]
+    limiter.wait(rpm=0)  # 0 = unlimited
+    assert len(slept) == 2

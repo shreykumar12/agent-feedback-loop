@@ -46,7 +46,7 @@ def run_suite(
     feedback_level: str | None = None,
     max_tries: int | None = None,
     seed: int = 0,
-    workers: int = 4,
+    workers: int | None = None,
     notes: str = "",
     quiet: bool = False,
 ) -> str:
@@ -55,6 +55,9 @@ def run_suite(
             f"No API key for {model!r}. Set GEMINI_API_KEY (or LLM_API_KEY) in .env, "
             "or run offline with a simulated model: --model sim-base"
         )
+    if workers is None:
+        # Real APIs are usually rate-limited: one task at a time unless asked otherwise.
+        workers = 4 if agent.is_simulated(model) else 1
     storage.init_db()
     tasks = load_tasks(task_ids=task_ids)
     settings = LoopSettings(

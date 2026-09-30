@@ -26,6 +26,10 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-3.8-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "4"))
+# Client-side pacing for rate-limited keys (free tiers): max requests per minute
+# (0 = unlimited) and how many times to wait-and-retry a per-minute 429.
+LLM_RPM = float(os.getenv("LLM_RPM", "0"))
+LLM_RATE_LIMIT_RETRIES = int(os.getenv("LLM_RATE_LIMIT_RETRIES", "6"))
 
 # USD per 1M tokens (input, output), for cost estimates. Unknown models -> 0.
 # Add current prices for the models you use (e.g. gemini-3.8-flash); these are not auto-updated.

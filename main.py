@@ -249,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="run the suite under one configuration")
     p.add_argument("--model", default=config.GENERATOR_MODEL,
-                   help="e.g. gemini-2.5-flash, or offline: sim-strong / sim-base / sim-weak")
+                   help="e.g. gemini-3.8-flash, or offline: sim-strong / sim-base / sim-weak")
     p.add_argument("--feedback-level", default=config.FEEDBACK_LEVEL, choices=FEEDBACK_LEVELS)
     p.add_argument("--judge", action="store_true", help="score passing code with the LLM judge")
     p.add_argument("--seed", type=int, default=0)

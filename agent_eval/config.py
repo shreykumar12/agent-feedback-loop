@@ -21,13 +21,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 LLM_API_KEY = os.getenv("LLM_API_KEY") or GEMINI_API_KEY
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "gemini-2.5-flash")
-JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-2.5-flash")
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "gemini-3.8-flash")
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gemini-3.8-flash")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "4"))
 
 # USD per 1M tokens (input, output), for cost estimates. Unknown models -> 0.
+# Add current prices for the models you use (e.g. gemini-3.8-flash); these are not auto-updated.
 MODEL_PRICING = {
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),

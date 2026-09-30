@@ -5,7 +5,7 @@ provider is a config change, which is what makes model-swap regression
 comparisons possible. Providers:
 
   * any OpenAI-compatible chat endpoint via langchain-openai (Gemini by
-    default: ``gemini-2.5-flash`` etc.)
+    default: ``gemini-3.8-flash`` etc.)
   * ``sim-*`` models: an offline, deterministic simulated agent (see
     ``simulated.py``) so the full pipeline runs without an API key.
 """
@@ -23,6 +23,19 @@ from agent_eval.models import Task
 
 class AgentError(RuntimeError):
     """The model could not be called (auth, network, quota). Not a code failure."""
+
+
+def hint_for(exc: Exception) -> str:
+    """A one-line suggestion for common provider errors."""
+    text = str(exc)
+    if "NotFound" in text or "404" in text:
+        return ("\nhint: this model name is not available to your API key. Pass another with --model "
+                "(or set GENERATOR_MODEL in .env); see https://ai.google.dev/gemini-api/docs/models")
+    if "401" in text or "403" in text or "Authentication" in text or "PermissionDenied" in text:
+        return "\nhint: the API key was rejected; check GEMINI_API_KEY (or LLM_API_KEY) in .env"
+    if "429" in text or "RateLimit" in text or "quota" in text.lower():
+        return "\nhint: rate limit or quota hit; retry later or lower --workers"
+    return ""
 
 
 @dataclass

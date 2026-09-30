@@ -83,7 +83,7 @@ def run_tests(
     """Run ``task.test_code`` against ``code`` in a subprocess. Never raises
     for anything the candidate code does -- every failure is a result."""
     timeout = timeout or config.SANDBOX_TIMEOUT_SECONDS
-    per_test_timeout = per_test_timeout or config.SANDBOX_PER_TEST_TIMEOUT_SECONDS
+    per_test_timeout = per_test_timeout or task.per_test_timeout or config.SANDBOX_PER_TEST_TIMEOUT_SECONDS
     memory_mb = memory_mb or config.SANDBOX_MEMORY_LIMIT_MB
 
     start = time.perf_counter()

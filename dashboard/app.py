@@ -84,11 +84,11 @@ def run_label(r: dict) -> str:
 
 
 def config_tuple(r: dict) -> tuple:
-    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"])
+    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"], r.get("suite") or "easy")
 
 
-def series_label(model: str, prompt: str, k: int) -> str:
-    return f"{model} · {prompt} · k={k}"
+def series_label(model: str, prompt: str, k: int, suite: str = "easy") -> str:
+    return f"{model} · {suite} · {prompt} · k={k}"
 
 
 def fb_rank(level: str) -> int:
@@ -174,17 +174,17 @@ def config_table(dbk: str) -> list[dict]:
     for r in load_runs(dbk):
         groups[config_tuple(r)].append(r)
     rows = []
-    for (model, prompt, fb, k), runs in groups.items():
+    for (model, prompt, fb, k, suite), runs in groups.items():
         summaries = [load_summary(dbk, r["run_id"]) for r in runs]
         agg = metrics.aggregate_summaries(summaries)
         tps = [s["tokens_per_solved"] for s in summaries if s["tokens_per_solved"] is not None]
         rows.append({
-            "key": (model, prompt, fb, k), "label": config_key(runs[0]),
-            "model": model, "prompt_version": prompt, "feedback_level": fb, "max_tries": k,
+            "key": (model, prompt, fb, k, suite), "label": config_key(runs[0]),
+            "model": model, "prompt_version": prompt, "feedback_level": fb, "max_tries": k, "suite": suite,
             "run_ids": [r["run_id"] for r in runs], "seeds": sorted(r["seed"] for r in runs),
             "agg": agg, "tokens_per_solved": sum(tps) / len(tps) if tps else None,
         })
-    rows.sort(key=lambda c: (c["model"], c["prompt_version"], c["max_tries"], fb_rank(c["feedback_level"])))
+    rows.sort(key=lambda c: (c["suite"], c["model"], c["prompt_version"], c["max_tries"], fb_rank(c["feedback_level"])))
     return rows
 
 
@@ -413,7 +413,7 @@ def section_leaderboard(configs: list[dict]) -> None:
         m = c["agg"][agg_key]
         if m["mean"] is None:
             continue
-        rows.append({"series": series_label(c["model"], c["prompt_version"], c["max_tries"]),
+        rows.append({"series": series_label(c["model"], c["prompt_version"], c["max_tries"], c["suite"]),
                      "feedback_level": c["feedback_level"], "mean": m["mean"], "std": m["std"],
                      "lo": m["mean"] - m["std"], "hi": m["mean"] + m["std"], "runs": c["agg"]["num_runs"]})
     df = pd.DataFrame(rows)
@@ -436,7 +436,7 @@ def section_leaderboard(configs: list[dict]) -> None:
     st.markdown("**pass@k per configuration** (mean across seeds)")
     by_series: dict[str, list[dict]] = defaultdict(list)
     for c in configs:
-        by_series[series_label(c["model"], c["prompt_version"], c["max_tries"])].append(c)
+        by_series[series_label(c["model"], c["prompt_version"], c["max_tries"], c["suite"])].append(c)
     all_levels = sorted({c["feedback_level"] for c in configs}, key=fb_rank)
     # Same entity -> color mapping as the HTML report: full=slot 1, names=2, minimal=3, none=4.
     color_order = ["full", "names", "minimal", "none"]

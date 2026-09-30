@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS runs (
     seed            INTEGER NOT NULL DEFAULT 0,
     notes           TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'running',
-    finished_at     TEXT
+    finished_at     TEXT,
+    suite           TEXT NOT NULL DEFAULT 'easy'
 );
 CREATE TABLE IF NOT EXISTS tasks (
     task_id     TEXT PRIMARY KEY,
@@ -37,7 +38,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     entry_point TEXT NOT NULL,
     test_code   TEXT NOT NULL,
     difficulty  TEXT NOT NULL DEFAULT 'medium',
-    tags        TEXT NOT NULL DEFAULT '[]'
+    tags        TEXT NOT NULL DEFAULT '[]',
+    category    TEXT NOT NULL DEFAULT 'function'
 );
 CREATE TABLE IF NOT EXISTS attempts (
     attempt_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,9 +88,21 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first schema version: (table, column, DDL). init_db adds
+# any that an older database file is missing, so existing run history keeps working.
+MIGRATIONS = (
+    ("runs", "suite", "TEXT NOT NULL DEFAULT 'easy'"),
+    ("tasks", "category", "TEXT NOT NULL DEFAULT 'function'"),
+)
+
+
 def init_db() -> None:
     with get_connection() as conn:
         conn.executescript(SCHEMA)
+        for table, column, ddl in MIGRATIONS:
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     conn.close()
 
 
@@ -104,9 +118,9 @@ def create_run(run: RunInfo) -> None:
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO runs (run_id, model, prompt_version, feedback_level, max_tries, timestamp,"
-            " suite_hash, seed, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " suite_hash, seed, notes, suite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run.run_id, run.model, run.prompt_version, run.feedback_level, run.max_tries,
-             run.timestamp, run.suite_hash, run.seed, run.notes),
+             run.timestamp, run.suite_hash, run.seed, run.notes, run.suite),
         )
     conn.close()
 
@@ -120,12 +134,12 @@ def finish_run(run_id: str, finished_at: str, status: str = "completed") -> None
 
 def _save_task(conn: sqlite3.Connection, task: Task) -> None:
     conn.execute(
-        "INSERT INTO tasks (task_id, prompt, entry_point, test_code, difficulty, tags)"
-        " VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET prompt = excluded.prompt,"
+        "INSERT INTO tasks (task_id, prompt, entry_point, test_code, difficulty, tags, category)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(task_id) DO UPDATE SET prompt = excluded.prompt,"
         " entry_point = excluded.entry_point, test_code = excluded.test_code,"
-        " difficulty = excluded.difficulty, tags = excluded.tags",
+        " difficulty = excluded.difficulty, tags = excluded.tags, category = excluded.category",
         (task.task_id, task.prompt, task.entry_point, task.test_code, task.difficulty,
-         json.dumps(task.tags)),
+         json.dumps(task.tags), task.category),
     )
 
 
@@ -225,11 +239,11 @@ def resolve_run_id(ref: str) -> str:
 
 def resolve_run_refs(ref: str) -> list[str]:
     """Resolve a run reference that may name several runs:
-    comma-separated ids/prefixes, or a config selector ``@model[/feedback[/prompt]]``
+    comma-separated ids/prefixes, or a config selector ``@model[/feedback[/prompt[/suite]]]``
     (all stored runs of that configuration, e.g. every seed)."""
     if ref.startswith("@"):
         parts = ref[1:].split("/")
-        keys = ("model", "feedback_level", "prompt_version")
+        keys = ("model", "feedback_level", "prompt_version", "suite")
         wanted = dict(zip(keys, parts, strict=False))
         matches = [r["run_id"] for r in list_runs()
                    if all(r[k] == v for k, v in wanted.items() if v)]
@@ -242,7 +256,7 @@ def resolve_run_refs(ref: str) -> list[str]:
 def get_results(run_id: str) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT res.*, t.difficulty, t.tags FROM results res"
+            "SELECT res.*, t.difficulty, t.tags, t.category FROM results res"
             " LEFT JOIN tasks t ON t.task_id = res.task_id"
             " WHERE res.run_id = ? ORDER BY res.task_id",
             (run_id,),

@@ -21,7 +21,8 @@ TEMPLATE_PATH = Path(__file__).with_name("report_template.html")
 
 
 def config_key(run: dict) -> str:
-    return f"{run['model']} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
+    suite = run.get("suite") or "easy"
+    return f"{run['model']} · {suite} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
 
 
 def _mean(values):

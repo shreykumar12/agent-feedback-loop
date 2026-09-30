@@ -163,12 +163,13 @@ def partial_credit_by_attempt(attempts: list[dict], max_tries: int) -> list[floa
     return curve
 
 
-def by_difficulty(results: list[dict], attempts: list[dict]) -> dict[str, dict]:
+def by_difficulty(results: list[dict], attempts: list[dict], field: str = "difficulty",
+                  order: dict[str, int] | None = None) -> dict[str, dict]:
     by_task = group_attempts(attempts)
     groups: dict[str, list[dict]] = defaultdict(list)
     for r in results:
-        groups[r.get("difficulty") or "unknown"].append(r)
-    order = {"easy": 0, "medium": 1, "hard": 2}
+        groups[r.get(field) or "unknown"].append(r)
+    order = order or {"easy": 0, "medium": 1, "hard": 2}
     out = {}
     for diff in sorted(groups, key=lambda d: order.get(d, 9)):
         rows = groups[diff]
@@ -212,6 +213,7 @@ def summarize_run(run: dict, results: list[dict], attempts: list[dict]) -> dict:
         "model": run.get("model"),
         "prompt_version": run.get("prompt_version"),
         "feedback_level": run.get("feedback_level"),
+        "suite": run.get("suite", "easy"),
         "max_tries": max_tries,
         "seed": run.get("seed"),
         "timestamp": run.get("timestamp"),
@@ -235,6 +237,8 @@ def summarize_run(run: dict, results: list[dict], attempts: list[dict]) -> dict:
         "retry_dynamics": retry_dynamics(attempts),
         "partial_credit": partial_credit_by_attempt(attempts, max_tries),
         "by_difficulty": by_difficulty(results, attempts),
+        "by_category": by_difficulty(results, attempts, field="category", order={
+            "function": 0, "bugfix": 1, "stateful": 2, "spec": 3, "performance": 4}),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "tokens_per_solved": (tokens_in + tokens_out) / n_passed if n_passed else None,

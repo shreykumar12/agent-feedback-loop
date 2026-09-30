@@ -54,7 +54,7 @@ def cmd_run(args) -> int:
             run_id = run_suite(
                 model=args.model, prompt_version=args.prompt_version, task_ids=args.tasks,
                 use_judge=args.judge, feedback_level=args.feedback_level, max_tries=args.max_tries,
-                seed=seed, workers=args.workers, notes=args.notes,
+                seed=seed, workers=args.workers, notes=args.notes, suite=args.suite,
             )
             print(run_id)
     except AgentError as exc:
@@ -71,11 +71,11 @@ def cmd_runs(args) -> int:
     if not runs:
         print("no runs yet -- try: python main.py run --model sim-base")
         return 0
-    header = f"{'run_id':<10}{'timestamp':<27}{'model':<20}{'prompt':<8}{'feedback':<10}{'tries':>6}{'seed':>6}{'tasks':>7}{'pass':>8}  status"
+    header = f"{'run_id':<10}{'timestamp':<27}{'model':<20}{'suite':<7}{'prompt':<8}{'feedback':<10}{'tries':>6}{'seed':>6}{'tasks':>7}{'pass':>8}  status"
     print(header)
     print("-" * len(header))
     for r in runs:
-        print(f"{r['run_id'][:8]:<10}{r['timestamp']:<27}{r['model'][:19]:<20}{r['prompt_version']:<8}"
+        print(f"{r['run_id'][:8]:<10}{r['timestamp']:<27}{r['model'][:19]:<20}{r.get('suite', 'easy'):<7}{r['prompt_version']:<8}"
               f"{r['feedback_level']:<10}{r['max_tries']:>6}{r['seed']:>6}{r['num_tasks']:>7}"
               f"{_pct(r['pass_rate']):>8}  {r['status']}")
     return 0
@@ -83,7 +83,7 @@ def cmd_runs(args) -> int:
 
 def _print_summary(s: dict) -> None:
     lo, hi = s["pass_rate_ci95"]
-    print(f"run {s['run_id'][:8]}  {s['model']} / prompt {s['prompt_version']} / feedback={s['feedback_level']}"
+    print(f"run {s['run_id'][:8]}  {s['model']} / suite {s.get('suite', 'easy')} / prompt {s['prompt_version']} / feedback={s['feedback_level']}"
           f" / max_tries={s['max_tries']} / seed={s['seed']}")
     print(f"  final pass rate     {_pct(s['pass_rate'])}  ({s['num_passed']}/{s['num_tasks']}, 95% CI {lo:.0%}-{hi:.0%})")
     print(f"  pass@1              {_pct(s['pass_at_1'])}")
@@ -103,6 +103,9 @@ def _print_summary(s: dict) -> None:
     print("  all failed attempts " + (", ".join(f"{k}={v}" for k, v in s["error_counts"].items()) or "-"))
     print("  by difficulty       " + "  ".join(
         f"{d}: {v['pass_at_1']:.0%}->{v['pass_rate']:.0%} (n={v['n']})" for d, v in s["by_difficulty"].items()))
+    if len(s["by_category"]) > 1:
+        print("  by category         " + "  ".join(
+            f"{c}: {v['pass_at_1']:.0%}->{v['pass_rate']:.0%} (n={v['n']})" for c, v in s["by_category"].items()))
     print(f"  tokens              in {s['tokens_in']:,} / out {s['tokens_out']:,}"
           + (f" / {s['tokens_per_solved']:,.0f} per solved task" if s["tokens_per_solved"] else ""))
     print(f"  est. cost           ${s['est_cost_usd']:.4f}")
@@ -175,7 +178,7 @@ def cmd_ablation(args) -> int:
                 for seed in range(args.seeds):
                     rid = run_suite(model=model, prompt_version=args.prompt_version, task_ids=args.tasks,
                                     feedback_level=level, max_tries=args.max_tries, seed=seed,
-                                    workers=args.workers, notes=tag, quiet=True)
+                                    workers=args.workers, notes=tag, quiet=True, suite=args.suite)
                     summaries.append(metrics.load_summary(rid))
                     print(f"  {model} fb={level} seed={seed}: {summaries[-1]['pass_rate']:.1%}", file=sys.stderr)
                 rows.append((model, level, metrics.aggregate_summaries(summaries)))
@@ -211,7 +214,7 @@ def cmd_report(args) -> int:
 def cmd_validate(args) -> int:
     from agent_eval.tasks import load_tasks, suite_hash, validate_suite
 
-    tasks = load_tasks(task_ids=args.tasks)
+    tasks = load_tasks(task_ids=args.tasks, suite=args.suite)
     reports = validate_suite(tasks)
     print(f"{'task_id':<30}{'diff':<8}{'tests':>6}{'canonical':>11}{'mutants killed':>16}")
     for t, r in zip(tasks, reports, strict=False):
@@ -242,7 +245,13 @@ def cmd_delete_run(args) -> int:
     return 0
 
 
+def _add_suite_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--suite", default=None,
+                   help=f"task suite: {' / '.join(config.SUITES)} or a path to a tasks JSON (default: {config.DEFAULT_SUITE})")
+
+
 def _add_loop_args(p: argparse.ArgumentParser) -> None:
+    _add_suite_arg(p)
     p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
     p.add_argument("--max-tries", type=int, default=config.MAX_TRIES)
     p.add_argument("--tasks", nargs="+", metavar="TASK_ID", help="only run these tasks")
@@ -309,6 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("validate-tasks", help="check canonical solutions + mutation score")
     p.add_argument("--tasks", nargs="+", metavar="TASK_ID")
+    _add_suite_arg(p)
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("delete-run", help="remove a run and its attempts")

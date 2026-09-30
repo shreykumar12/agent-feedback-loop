@@ -66,7 +66,8 @@ def extract_code(response_text: str, entry_point: str | None = None) -> str:
         return text.strip() + "\n" if text.strip() else ""
     python_blocks = [b for lang, b in blocks if lang in ("python", "py", "python3")] or [b for _, b in blocks]
     if entry_point:
-        defining = [b for b in python_blocks if re.search(rf"\bdef\s+{re.escape(entry_point)}\s*\(", b)]
+        defining = [b for b in python_blocks
+                    if re.search(rf"\b(?:def|class)\s+{re.escape(entry_point)}\b", b)]
         if defining:
             python_blocks = defining
     return max(python_blocks, key=len).strip() + "\n"
@@ -163,7 +164,7 @@ def generate(
 ) -> Generation:
     model = model or config.GENERATOR_MODEL
     prompt_version = prompt_version or config.DEFAULT_PROMPT_VERSION
-    system, user = prompts.render(prompt_version, task.prompt, previous_code, feedback)
+    system, user = prompts.render(prompt_version, task.prompt, previous_code, feedback, task.category)
 
     start = time.perf_counter()
     if is_simulated(model):

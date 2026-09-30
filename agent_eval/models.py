@@ -37,6 +37,10 @@ class Task:
     # offline simulated agent.
     canonical_solution: str | None = None
     mutants: list[str] = field(default_factory=list)
+    # What kind of problem this is (function, bugfix, stateful, spec, performance).
+    category: str = "function"
+    # Per-test time limit override, e.g. tight limits on performance tasks.
+    per_test_timeout: float | None = None
 
 
 @dataclass
@@ -148,3 +152,4 @@ class RunInfo:
     suite_hash: str = ""
     seed: int = 0
     notes: str = ""
+    suite: str = "easy"

@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from agent_eval import agent, config, judge, metrics, storage
 from agent_eval.graph import LoopSettings, run_task
 from agent_eval.models import RunInfo, Task, TaskResult
-from agent_eval.tasks import load_tasks, suite_hash
+from agent_eval.tasks import load_tasks, suite_hash, suite_name
 
 
 def _now() -> str:
@@ -49,6 +49,7 @@ def run_suite(
     workers: int | None = None,
     notes: str = "",
     quiet: bool = False,
+    suite: str | None = None,
 ) -> str:
     if not agent.is_simulated(model) and not config.LLM_API_KEY:
         raise agent.AgentError(
@@ -59,7 +60,7 @@ def run_suite(
         # Real APIs are usually rate-limited: one task at a time unless asked otherwise.
         workers = 4 if agent.is_simulated(model) else 1
     storage.init_db()
-    tasks = load_tasks(task_ids=task_ids)
+    tasks = load_tasks(task_ids=task_ids, suite=suite)
     settings = LoopSettings(
         model=model,
         prompt_version=prompt_version,
@@ -77,10 +78,11 @@ def run_suite(
         suite_hash=suite_hash(tasks),
         seed=seed,
         notes=notes,
+        suite=suite_name(suite),
     )
     storage.create_run(run)
     log = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))
-    log(f"run {run.run_id[:8]}: {model} / prompt {prompt_version} / feedback={settings.feedback_level}"
+    log(f"run {run.run_id[:8]}: {model} / suite {run.suite} / prompt {prompt_version} / feedback={settings.feedback_level}"
         f" / max_tries={settings.max_tries} / seed={seed} / {len(tasks)} tasks")
 
     status = "completed"

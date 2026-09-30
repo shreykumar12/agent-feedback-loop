@@ -136,6 +136,12 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <div class="chart loading" id="c-difficulty"></div>
       <details><summary>Data table</summary><div class="table-wrap" id="t-difficulty"></div></details>
     </article>
+    <article class="card wide" id="category-card" hidden>
+      <h2>Pass rate by task category</h2>
+      <p class="caption">Focus run. Bug-fixing, stateful classes, long specs and performance limits fail in different ways; the retry segment shows where feedback helps.</p>
+      <div class="chart loading" id="c-category"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-category"></div></details>
+    </article>
     <article class="card">
       <h2>Error-state transitions</h2>
       <p class="caption">Focus run. Each cell counts retries that moved from one sandbox verdict to the next. The <span class="mono">passed</span> column is where the loop succeeds.</p>
@@ -200,7 +206,7 @@ footer { font-size: 0.8rem; color: var(--muted); }
   const fr = D.focus_run;
   document.getElementById("title").textContent = "Evaluation report · " + fr.model;
   const meta = document.getElementById("meta");
-  [["focus run", fr.run_id.slice(0, 8)], ["prompt", fr.prompt_version], ["feedback", fr.feedback_level],
+  [["focus run", fr.run_id.slice(0, 8)], ["suite", fr.suite || "easy"], ["prompt", fr.prompt_version], ["feedback", fr.feedback_level],
    ["max tries", fr.max_tries], ["seed", fr.seed], ["suite", fr.suite_hash || "–"], ["runs in report", D.num_runs]]
     .forEach(([k, v]) => { const s = el("span", {}, k + " "); s.appendChild(el("b", {}, String(v))); meta.appendChild(s); });
   document.getElementById("sim-banner").hidden = !D.simulated;
@@ -255,6 +261,11 @@ footer { font-size: 0.8rem; color: var(--muted); }
   table("t-tries", [{ label: "first passed on", key: "bucket" }, { label: "tasks", key: "count", num: true }], D.tries);
   table("t-difficulty", [{ label: "difficulty", key: "difficulty" }, { label: "segment", key: "segment" },
     { label: "share", key: "value", num: true, fmt: v => pct(v, 1) }, { label: "tasks", key: "n", num: true }], D.difficulty);
+  const CATS = ["function", "bugfix", "stateful", "spec", "performance"];
+  const hasCategories = new Set(D.category.map(r => r.category)).size > 1;
+  document.getElementById("category-card").hidden = !hasCategories;
+  table("t-category", [{ label: "category", key: "category" }, { label: "segment", key: "segment" },
+    { label: "share", key: "value", num: true, fmt: v => pct(v, 1) }, { label: "tasks", key: "n", num: true }], D.category);
   table("t-transitions", [{ label: "from", key: "from" }, { label: "to", key: "to" }, { label: "retries", key: "count", num: true }], D.transitions);
   table("t-errors", [{ label: "verdict", key: "error_type" }, { label: "failed attempts", key: "count", num: true }], D.errors);
   table("t-grid", [{ label: "task", key: "task_id" }, { label: "difficulty", key: "difficulty" }, { label: "configuration", key: "config" },
@@ -398,6 +409,9 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
     out["c-difficulty"] = { data: { values: withOrder(D.difficulty) }, width: chartWidth("c-difficulty"), height: 230,
       ...stackedLayer("difficulty", DIFFS, "difficulty") };
+
+    out["c-category"] = hasCategories ? { data: { values: withOrder(D.category) }, width: chartWidth("c-category"), height: 230,
+      ...stackedLayer("category", CATS, "category") } : null;
 
     const triesOrder = D.tries.map(t => t.bucket);
     out["c-tries"] = { data: { values: D.tries }, width: chartWidth("c-tries"), height: 230,

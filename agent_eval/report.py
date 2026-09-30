@@ -120,6 +120,10 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
     for diff, d in focus["by_difficulty"].items():
         difficulty_rows.append({"difficulty": diff, "segment": "Solved on try 1", "value": d["pass_at_1"], "n": d["n"], "final": d["pass_rate"]})
         difficulty_rows.append({"difficulty": diff, "segment": "Solved by a retry", "value": d["lift"], "n": d["n"], "final": d["pass_rate"]})
+    category_rows = []
+    for cat, d in focus["by_category"].items():
+        category_rows.append({"category": cat, "segment": "Solved on try 1", "value": d["pass_at_1"], "n": d["n"], "final": d["pass_rate"]})
+        category_rows.append({"category": cat, "segment": "Solved by a retry", "value": d["lift"], "n": d["n"], "final": d["pass_rate"]})
     error_rows = [{"error_type": k, "count": v} for k, v in focus["error_counts"].items()]
     partial_rows = [{"k": i + 1, "credit": v} for i, v in enumerate(focus["partial_credit"]) if v is not None]
 
@@ -133,7 +137,7 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
         "num_runs": len(runs),
         "focus": focus,
         "focus_run": {k: focus_run.get(k) for k in ("run_id", "model", "prompt_version", "feedback_level",
-                                                    "max_tries", "seed", "timestamp", "suite_hash", "notes")},
+                                                    "max_tries", "seed", "timestamp", "suite_hash", "notes", "suite")},
         "configs": configs,
         "pass_at_k": pass_at_k_rows,
         "ablation": ablation_rows,
@@ -141,6 +145,7 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
         "tries": tries_rows,
         "transitions": transitions,
         "difficulty": difficulty_rows,
+        "category": category_rows,
         "errors": error_rows,
         "partial": partial_rows,
         "comparison": comparison,

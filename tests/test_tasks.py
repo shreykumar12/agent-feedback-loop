@@ -9,6 +9,8 @@ from agent_eval import config
 from agent_eval.tasks import TaskFormatError, load_tasks, suite_hash, validate_task
 
 TASKS = load_tasks()
+HARD = load_tasks(suite="hard")
+ALL = TASKS + HARD
 
 
 def test_suite_shape():
@@ -17,7 +19,18 @@ def test_suite_shape():
     assert len({t.task_id for t in TASKS}) == len(TASKS)
 
 
-@pytest.mark.parametrize("task", TASKS, ids=[t.task_id for t in TASKS])
+def test_hard_suite_shape():
+    assert 15 <= len(HARD) <= 25
+    assert {t.category for t in HARD} == {"bugfix", "stateful", "spec", "performance"}
+    assert sum(t.difficulty == "hard" for t in HARD) >= len(HARD) * 0.7
+    # Task ids are global in storage, so the suites must not share any.
+    assert len({t.task_id for t in ALL}) == len(ALL)
+    for task in HARD:
+        if task.category == "performance":
+            assert task.per_test_timeout, f"{task.task_id} needs a per_test_timeout"
+
+
+@pytest.mark.parametrize("task", ALL, ids=[t.task_id for t in ALL])
 def test_canonical_passes_and_all_mutants_killed(task):
     report = validate_task(task)
     assert report.canonical_passed, report.canonical_failures
@@ -26,7 +39,7 @@ def test_canonical_passes_and_all_mutants_killed(task):
 
 
 def test_prompts_never_contain_tests_or_solutions():
-    for task in TASKS:
+    for task in ALL:
         assert "def test_" not in task.prompt
         assert task.canonical_solution.strip() != task.prompt.strip()
 

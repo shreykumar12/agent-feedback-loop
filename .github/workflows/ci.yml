@@ -30,7 +30,9 @@ jobs:
       - name: Unit tests
         run: pytest
       - name: Task suite validity (mutation score)
-        run: python main.py validate-tasks
+        run: |
+          python main.py validate-tasks --suite easy
+          python main.py validate-tasks --suite hard
       - name: Offline end-to-end smoke run
         env:
           AGENT_EVAL_DB: ${{ runner.temp }}/ci.db

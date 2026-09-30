@@ -101,3 +101,18 @@ Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
   regression tab defaults to best vs worst configuration, feedback-level colors
   aligned with the HTML report (full = slot 1).
 - Test suite: 114 tests, ~40 s locally (dashboard AppTests dominate).
+
+## Hard suite (branch claude/11-hard-suite)
+- Why: the easy suite is saturated for frontier models (the user saw no failures with
+  gemini-3.8-flash), so the loop had nothing to measure.
+- tasks/tasks_hard.json: 20 tasks, 5 each of bugfix / stateful / spec / performance,
+  16 hard + 4 medium, 269 tests, 102 mutants, mutation score 100%. Written by two
+  subagents, verified by me (validate-tasks + a performance timing check).
+- Performance tasks: per_test_timeout 1.5 s; reference solutions use 14-20% of it
+  on this machine; each has >= 1 correct-but-slow mutant that times out
+  (worst mutant 4.6 s total, under the 10 s sandbox cap).
+- Easy-suite v1 prompts render byte-for-byte as before (tested), so existing
+  results stay comparable. Old DBs migrate in place (runs.suite, tasks.category).
+- Open question for the user: two semver tasks (fix_semver_range_matcher in
+  bugfix, semver_range_satisfies in spec). Kept both for now.
+- Test suite: 147 tests, ~100 s locally (the hard suite's validity tests add ~60 s).

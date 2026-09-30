@@ -78,6 +78,23 @@ Each test gets its own SIGALRM timeout, raised as a `BaseException` so `except E
 
 **Offline simulator.** No API key? The `sim-strong`, `sim-base` and `sim-weak` models "write" either a task's reference solution or one of its mutants. A failure lowers the chance of fixing the task on a blind retry, and feedback can only raise it. The simulator reads the feedback text: with full feedback it turns the shown assertions into probe tests and runs its candidate fixes against them in the sandbox. Its results are a demonstration of the measurement system, **not claims about any real LLM**.
 
+## Task suites
+
+The easy suite is useful as a baseline, but classic "write a function from a docstring" problems are saturated: frontier models pass nearly all of them on the first try, which leaves the retry loop nothing to measure. The hard suite targets the ways strong models actually fail.
+
+| Suite | Tasks | Hidden tests | Mutants | What it contains |
+|---|---|---|---|---|
+| `easy` (`tasks/tasks.json`) | 20 (6 easy, 8 medium, 6 hard) | 164 | 88 | Function-from-docstring problems with a few trap conventions |
+| `hard` (`tasks/tasks_hard.json`) | 20 (16 hard, 4 medium) | 269 | 102 | Five tasks in each of four categories, below |
+
+Hard-suite categories:
+- **Bug-fixing:** 40–120 lines of realistic, buggy production-style code with a symptom-only bug report. Examples: refund cent allocation, keyset pagination, semver ranges, SLA business-hour deadlines, config deep merge. The original buggy code and plausible partial fixes are among the mutants.
+- **Stateful classes:** a token-bucket rate limiter, a limit order book, a nested-transaction key-value store, a coalescing undo buffer, a card-hold ledger. Tests drive long call sequences with an injected clock.
+- **Long specs:** a semver range matcher, a template engine, RFC 6902 JSON Patch, cron next-fire time, a TOML-subset parser. They have 15+ interacting rules, each one tested.
+- **Performance:** inputs of 10⁵–10⁶ under a 1.5 s per-test limit. A correct but quadratic solution times out, so the agent has to read the timeout feedback and change algorithms.
+
+Every task in both suites has a reference solution and mutants. `pytest` and CI require every reference to pass and every mutant to be caught, so both suites have a 100% mutation score. Runs record their suite, and every comparison, report and dashboard view keys on it, so easy and hard results never mix. Each run's summary also breaks pass@1 and the final pass rate down by category.
+
 ## Setup
 
 Requires Python ≥ 3.12, because the pinned dependencies need it.
@@ -100,6 +117,12 @@ python main.py attempts latest rank_players  # attempts, feedback and code for o
 # Real model (Gemini through its OpenAI-compatible endpoint)
 python main.py run --model gemini-3.8-flash --prompt-version v1 --feedback-level full
 python main.py run --model gemini-3.8-flash --prompt-version v2 --seeds 3 --judge
+python main.py run --model gemini-3.8-flash --rpm 5          # pace a rate-limited (free-tier) key
+
+# The hard suite (bug-fixing, stateful classes, long specs, performance limits)
+python main.py run --model gemini-3.8-flash --suite hard
+python main.py show latest                                   # includes the by-category breakdown
+python main.py compare @sim-strong/full/v1/hard @sim-weak/full/v1/hard   # compare within one suite
 
 # Feedback-level ablation: models x levels x seeds
 python main.py ablation --models sim-strong sim-base sim-weak --seeds 5
@@ -115,7 +138,8 @@ streamlit run dashboard/app.py
 
 # Tests and the suite's own validity check
 pytest
-python main.py validate-tasks
+python main.py validate-tasks --suite easy
+python main.py validate-tasks --suite hard
 ```
 
 ![Streamlit dashboard](docs/img/dashboard-overview.png)
@@ -184,13 +208,14 @@ VERDICT: REGRESSION
 
 ## Testing
 
-`pytest` runs 114 tests in about 40 s, with no API key, so CI runs them on every push:
+`pytest` runs 147 tests in about 100 s, with no API key, so CI runs them on every push:
 - **Sandbox:** timeouts that `except Exception` can't swallow, the global kill backstop, memory limit, secret stripping, isolation between runs, `sys.exit`.
 - **Feedback:** content at each level, truncation, and the hidden-test policy.
 - **Graph:** a scripted fake agent covers first-try pass, pass after retries, the max-tries stop, and that retry prompts receive the previous code and feedback.
 - **Storage:** round-trips.
 - **Metrics and regression:** hand-built runs with known answers, plus the McNemar, permutation and bootstrap math.
-- **Task suite validity:** reference solutions pass, mutants are caught.
+- **Task suite validity:** in both suites, every reference solution passes and every mutant is caught; performance tasks must declare a time limit; task ids are unique across suites.
+- **Suites:** easy-suite prompts render exactly as before, old databases migrate in place, and per-task time limits apply.
 - **Simulator:** more information never lowers the pass rate.
 - **Report and dashboard:** smoke tests.
 
@@ -198,7 +223,8 @@ VERDICT: REGRESSION
 
 - **The subprocess sandbox is not strong isolation.** rlimits and a stripped environment stop accidents (infinite loops, memory blowups, leaked keys), not an adversary. The code can still read the filesystem and open network sockets. `RLIMIT_NPROC` is not set because it is per-user. For untrusted models, run each attempt in Docker, gVisor or Firecracker.
 - **A small suite means noisy metrics.** With 20 tasks, one flipped task moves the pass rate by 5 pp and the 95% interval on a single run is about ±20 pp (13/20 → 43–82%). Even at temperature 0, provider-side nondeterminism means two identical runs can differ. Repeat runs, and prefer the paired and group tests over raw deltas.
-- **Benchmark contamination.** The tasks were written for this project rather than copied from HumanEval or MBPP, but they are HumanEval-*style* problems, and close variants likely exist in training data. Pass@1 on classic problems overstates ability on novel ones.
+- **Benchmark contamination.** The tasks were written for this project rather than copied from HumanEval or MBPP, but the easy suite is HumanEval-*style*, and close variants likely exist in training data. Pass@1 on classic problems overstates ability on novel ones. The hard suite reduces this, since its bug-fix code, class specs and rule sets are original, but it doesn't eliminate it: semver, cron and JSON Patch are well-known standards.
+- **The hard suite is not a repository benchmark.** Each task is still a single module. Multi-file, SWE-bench-style repair tasks would need the sandbox to copy a repo and run its own test suite.
 - **Simulated results are illustrative.** The `sim-*` models' behavior is designed. Only how feedback is used on a retry emerges from the feedback content, via the sandbox probes. The ablation shape above validates the pipeline, not a hypothesis about LLMs.
 - **The judge is optional and unvalidated.** LLM quality scores are not checked against human ratings. Treat them as a weak signal; correctness never depends on them.
 - **Cost figures** use a static price table in `config.py`. Check them against current provider pricing.
@@ -209,7 +235,8 @@ VERDICT: REGRESSION
 agent_eval/        package: sandbox, harness, feedback, prompts, agent, simulator, graph,
                    storage, metrics, regression, tasks, judge, report (+ HTML template)
 dashboard/app.py   Streamlit dashboard
-tasks/tasks.json   20 tasks: prompt, hidden tests, reference solution, mutants
+tasks/tasks.json   easy suite: 20 tasks (prompt, hidden tests, reference solution, mutants)
+tasks/tasks_hard.json  hard suite: 20 bug-fix / stateful / spec / performance tasks
 tests/             pytest suite (no API key needed)
 docs/DEV_NOTES.md  design log and findings
 main.py            CLI

@@ -37,8 +37,15 @@ def cmd_init_db(args) -> int:
     return 0
 
 
+def _apply_rpm(args) -> None:
+    if getattr(args, "rpm", None):
+        config.LLM_RPM = args.rpm
+
+
 def cmd_run(args) -> int:
     from agent_eval.agent import AgentError
+
+    _apply_rpm(args)
     from agent_eval.run_suite import run_suite
 
     seeds = list(range(args.seed, args.seed + args.seeds))
@@ -154,6 +161,8 @@ def cmd_attempts(args) -> int:
 
 def cmd_ablation(args) -> int:
     from agent_eval import metrics
+
+    _apply_rpm(args)
     from agent_eval.agent import AgentError
     from agent_eval.run_suite import run_suite
 
@@ -237,7 +246,10 @@ def _add_loop_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
     p.add_argument("--max-tries", type=int, default=config.MAX_TRIES)
     p.add_argument("--tasks", nargs="+", metavar="TASK_ID", help="only run these tasks")
-    p.add_argument("--workers", type=int, default=4, help="tasks run in parallel")
+    p.add_argument("--workers", type=int, default=None,
+                   help="tasks run in parallel (default: 4 for sim-* models, 1 for real APIs)")
+    p.add_argument("--rpm", type=float, default=None,
+                   help="max LLM requests per minute, for rate-limited keys (e.g. 5 on a free tier)")
     p.add_argument("--notes", default="", help="free-text label stored with the run")
 
 
@@ -249,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("run", help="run the suite under one configuration")
     p.add_argument("--model", default=config.GENERATOR_MODEL,
-                   help="e.g. gemini-2.5-flash, or offline: sim-strong / sim-base / sim-weak")
+                   help="e.g. gemini-3.8-flash, or offline: sim-strong / sim-base / sim-weak")
     p.add_argument("--feedback-level", default=config.FEEDBACK_LEVEL, choices=FEEDBACK_LEVELS)
     p.add_argument("--judge", action="store_true", help="score passing code with the LLM judge")
     p.add_argument("--seed", type=int, default=0)

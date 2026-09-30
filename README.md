@@ -98,8 +98,8 @@ python main.py show latest                 # full metrics summary
 python main.py attempts latest rank_players  # attempts, feedback and code for one task
 
 # Real model (Gemini through its OpenAI-compatible endpoint)
-python main.py run --model gemini-2.5-flash --prompt-version v1 --feedback-level full
-python main.py run --model gemini-2.5-flash --prompt-version v2 --seeds 3 --judge
+python main.py run --model gemini-3.8-flash --prompt-version v1 --feedback-level full
+python main.py run --model gemini-3.8-flash --prompt-version v2 --seeds 3 --judge
 
 # Feedback-level ablation: models x levels x seeds
 python main.py ablation --models sim-strong sim-base sim-weak --seeds 5
@@ -143,7 +143,7 @@ Any OpenAI-compatible endpoint works (OpenAI, OpenRouter, Ollama, vLLM): set `LL
 
 ## Results
 
-> **Read this first:** there was no API key in the environment where these numbers were produced, so they come from the offline **simulated** agent (60 suite runs: 3 sim models × 4 feedback levels × 5 seeds). They show what the system measures and how the analysis reads; they are not benchmark results for a real LLM. `python main.py ablation --models gemini-2.5-flash gemini-2.5-flash-lite --seeds 3` produces the real version.
+> **Read this first:** there was no API key in the environment where these numbers were produced, so they come from the offline **simulated** agent (60 suite runs: 3 sim models × 4 feedback levels × 5 seeds). They show what the system measures and how the analysis reads; they are not benchmark results for a real LLM. `python main.py ablation --models gemini-3.8-flash --seeds 3` produces the real version.
 
 ### Feedback-level ablation (final pass rate, mean ± sd over 5 seeds, max 3 tries)
 

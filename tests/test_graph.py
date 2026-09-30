@@ -98,3 +98,18 @@ def test_agent_infra_errors_propagate(task, monkeypatch):
     monkeypatch.setattr(agent, "generate", boom)
     with pytest.raises(agent.AgentError):
         run_task(task, LoopSettings(model="fake"))
+
+
+def test_suite_stops_on_first_infra_error_and_discards_empty_run(tmp_db, monkeypatch):
+    from agent_eval import config, storage
+    from agent_eval.run_suite import run_suite
+
+    def not_found(*args, **kwargs):
+        raise agent.AgentError("NotFoundError: Error code: 404 - model gone")
+
+    monkeypatch.setattr(agent, "generate", not_found)
+    monkeypatch.setattr(config, "LLM_API_KEY", "k")
+    with pytest.raises(agent.AgentError, match="hint: this model name is not available"):
+        run_suite(model="gone-model", prompt_version="v1", task_ids=["caesar_shift", "clamp_all"],
+                  workers=1, quiet=True)
+    assert storage.list_runs() == []  # nothing measured -> no half-empty run in history

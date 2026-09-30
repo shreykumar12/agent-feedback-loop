@@ -5,7 +5,7 @@ provider is a config change, which is what makes model-swap regression
 comparisons possible. Providers:
 
   * any OpenAI-compatible chat endpoint via langchain-openai (Gemini by
-    default: ``gemini-2.5-flash`` etc.)
+    default: ``gemini-3.8-flash`` etc.)
   * ``sim-*`` models: an offline, deterministic simulated agent (see
     ``simulated.py``) so the full pipeline runs without an API key.
 """
@@ -13,6 +13,7 @@ comparisons possible. Providers:
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,6 +24,22 @@ from agent_eval.models import Task
 
 class AgentError(RuntimeError):
     """The model could not be called (auth, network, quota). Not a code failure."""
+
+
+def hint_for(exc: Exception) -> str:
+    """A one-line suggestion for common provider errors."""
+    text = str(exc)
+    if "NotFound" in text or "404" in text:
+        return ("\nhint: this model name is not available to your API key. Pass another with --model "
+                "(or set GENERATOR_MODEL in .env); see https://ai.google.dev/gemini-api/docs/models")
+    if "401" in text or "403" in text or "Authentication" in text or "PermissionDenied" in text:
+        return "\nhint: the API key was rejected; check GEMINI_API_KEY (or LLM_API_KEY) in .env"
+    if _is_rate_limit(text):
+        if _is_daily_quota(text):
+            return ("\nhint: the API key's daily quota is used up; wait for it to reset, use another key, "
+                    "or run fewer tasks (--tasks ...)")
+        return "\nhint: still rate-limited after retries; lower the pace with --rpm (e.g. --rpm 5)"
+    return ""
 
 
 @dataclass
@@ -78,14 +95,54 @@ def _chat_client(model: str):
     )
 
 
+class _RateLimiter:
+    """Spaces calls to at most `rpm` per minute across all worker threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_at = 0.0
+
+    def wait(self, rpm: float) -> None:
+        if rpm <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next_at)
+            self._next_at = start + 60.0 / rpm
+        if start > now:
+            time.sleep(start - now)
+
+
+_limiter = _RateLimiter()
+_RETRY_DELAY = re.compile(r"(?:retry in|retryDelay['\"]?:\s*['\"]?)\s*([\d.]+)\s*s", re.IGNORECASE)
+
+
+def _is_rate_limit(text: str) -> bool:
+    return "429" in text or "RateLimit" in text or "RESOURCE_EXHAUSTED" in text or "quota" in text.lower()
+
+
+def _is_daily_quota(text: str) -> bool:
+    return "PerDay" in text or "per day" in text.lower() or "daily" in text.lower()
+
+
 def _call_llm(model: str, system: str, user: str) -> tuple[str, int, int]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     client = _chat_client(model)
-    try:
-        message = client.invoke([SystemMessage(content=system), HumanMessage(content=user)])
-    except Exception as exc:  # network/auth/quota -- infrastructure, not the agent's code
-        raise AgentError(f"{type(exc).__name__}: {exc}") from exc
+    for attempt in range(config.LLM_RATE_LIMIT_RETRIES + 1):
+        _limiter.wait(config.LLM_RPM)
+        try:
+            message = client.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+            break
+        except Exception as exc:  # network/auth/quota -- infrastructure, not the agent's code
+            text = f"{type(exc).__name__}: {exc}"
+            retryable = _is_rate_limit(text) and not _is_daily_quota(text)
+            if not retryable or attempt == config.LLM_RATE_LIMIT_RETRIES:
+                raise AgentError(text) from exc
+            # Per-minute limit: wait as long as the provider asks (or back off), then retry.
+            match = _RETRY_DELAY.search(text)
+            delay = float(match.group(1)) + 1 if match else min(60.0, 10.0 * 2 ** attempt)
+            time.sleep(delay)
     usage = getattr(message, "usage_metadata", None) or {}
     content = message.content
     if isinstance(content, list):  # some providers return content parts

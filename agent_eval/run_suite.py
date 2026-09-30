@@ -27,6 +27,8 @@ def _now() -> str:
 def _execute(task: Task, settings: LoopSettings, use_judge: bool):
     try:
         result, attempts = run_task(task, settings)
+    except agent.AgentError:
+        raise  # infrastructure problem (model name, key, quota): stop the whole run
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
         return TaskResult(task_id=task.task_id, passed=False, tries_taken=0, final_code="",
@@ -44,7 +46,7 @@ def run_suite(
     feedback_level: str | None = None,
     max_tries: int | None = None,
     seed: int = 0,
-    workers: int = 4,
+    workers: int | None = None,
     notes: str = "",
     quiet: bool = False,
 ) -> str:
@@ -53,6 +55,9 @@ def run_suite(
             f"No API key for {model!r}. Set GEMINI_API_KEY (or LLM_API_KEY) in .env, "
             "or run offline with a simulated model: --model sim-base"
         )
+    if workers is None:
+        # Real APIs are usually rate-limited: one task at a time unless asked otherwise.
+        workers = 4 if agent.is_simulated(model) else 1
     storage.init_db()
     tasks = load_tasks(task_ids=task_ids)
     settings = LoopSettings(
@@ -79,12 +84,20 @@ def run_suite(
         f" / max_tries={settings.max_tries} / seed={seed} / {len(tasks)} tasks")
 
     status = "completed"
+    completed = 0
     try:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {pool.submit(_execute, t, settings, use_judge): t for t in tasks}
             for i, future in enumerate(as_completed(futures), 1):
                 task = futures[future]
-                result, attempts, tb = future.result()
+                try:
+                    result, attempts, tb = future.result()
+                except agent.AgentError as exc:
+                    # Every task would fail the same way; stop instead of printing 20 tracebacks.
+                    status = "failed"
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise agent.AgentError(f"{exc}{agent.hint_for(exc)}") from exc
+                completed += 1
                 storage.save_task_run(run.run_id, task, result, attempts)
                 mark = "PASS" if result.passed else ("ERROR" if result.error else "FAIL")
                 trail = " ".join(
@@ -99,7 +112,10 @@ def run_suite(
         status = "interrupted"
         raise
     finally:
-        storage.finish_run(run.run_id, _now(), status)
+        if status == "failed" and completed == 0:
+            storage.delete_run(run.run_id)  # nothing measured; keep history clean
+        else:
+            storage.finish_run(run.run_id, _now(), status)
 
     if not quiet:
         s = metrics.load_summary(run.run_id)

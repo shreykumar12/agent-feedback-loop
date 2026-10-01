@@ -42,6 +42,36 @@ jobs:
           python main.py compare latest~1 latest || true
           python main.py report --out ${{ runner.temp }}/report.html
 
+  ml:
+    # PyTorch side: local models via LangChain, LoRA, the learned verifier and
+    # self-training rounds, on CPU with a tiny locally built model (no download).
+    runs-on: ubuntu-latest
+    env:
+      TRANSFORMERS_VERBOSITY: error
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: |
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt -r requirements-ml.txt
+      - name: ML tests
+        run: pytest tests/test_ml.py tests/test_training_tasks.py
+      - name: Verifier + self-training smoke run
+        env:
+          AGENT_EVAL_DB: ${{ runner.temp }}/ml.db
+          LOCAL_MAX_NEW_TOKENS: "24"
+        run: |
+          python main.py gen-train-tasks --n 120 --out ${{ runner.temp }}/train.json
+          python main.py train-verifier --train-suites ${{ runner.temp }}/train.json --epochs 2 --out ${{ runner.temp }}/verifier.pt
+          python -c "from agent_eval.ml.tiny import build_tiny_model; build_tiny_model('${{ runner.temp }}/tiny')"
+          python main.py selftrain --model hf:${{ runner.temp }}/tiny --experiment ci --rounds 1 \
+            --train-suite ${{ runner.temp }}/train.json --eval-suites easy --train-tasks 4 --eval-tasks 2 \
+            --max-tries 1 --warm-start --max-steps 2 --max-len 4096
+          python main.py curve ci
+
   live-eval:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

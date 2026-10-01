@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS runs (
     notes           TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'running',
     finished_at     TEXT,
-    suite           TEXT NOT NULL DEFAULT 'easy'
+    suite           TEXT NOT NULL DEFAULT 'easy',
+    candidates      INTEGER NOT NULL DEFAULT 1,
+    verifier        TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS tasks (
     task_id     TEXT PRIMARY KEY,
@@ -59,6 +61,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     tokens_out        INTEGER NOT NULL DEFAULT 0,
     latency_s         REAL NOT NULL DEFAULT 0,
     sandbox_s         REAL NOT NULL DEFAULT 0,
+    candidates        INTEGER NOT NULL DEFAULT 1,
+    verifier_score    REAL,
     UNIQUE (run_id, task_id, attempt_number)
 );
 CREATE TABLE IF NOT EXISTS results (
@@ -93,6 +97,10 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
 MIGRATIONS = (
     ("runs", "suite", "TEXT NOT NULL DEFAULT 'easy'"),
     ("tasks", "category", "TEXT NOT NULL DEFAULT 'function'"),
+    ("runs", "candidates", "INTEGER NOT NULL DEFAULT 1"),
+    ("runs", "verifier", "TEXT NOT NULL DEFAULT ''"),
+    ("attempts", "candidates", "INTEGER NOT NULL DEFAULT 1"),
+    ("attempts", "verifier_score", "REAL"),
 )
 
 
@@ -118,9 +126,9 @@ def create_run(run: RunInfo) -> None:
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO runs (run_id, model, prompt_version, feedback_level, max_tries, timestamp,"
-            " suite_hash, seed, notes, suite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " suite_hash, seed, notes, suite, candidates, verifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (run.run_id, run.model, run.prompt_version, run.feedback_level, run.max_tries,
-             run.timestamp, run.suite_hash, run.seed, run.notes, run.suite),
+             run.timestamp, run.suite_hash, run.seed, run.notes, run.suite, run.candidates, run.verifier),
         )
     conn.close()
 
@@ -148,12 +156,13 @@ def _save_attempt(conn: sqlite3.Connection, run_id: str, task_id: str, attempt: 
     conn.execute(
         "INSERT INTO attempts (run_id, task_id, attempt_number, code, test_results, passed,"
         " error_type, num_passed, num_total, feedback_given, feedback_produced, raw_response,"
-        " tokens_in, tokens_out, latency_s, sandbox_s)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " tokens_in, tokens_out, latency_s, sandbox_s, candidates, verifier_score)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, task_id, attempt.attempt_number, attempt.code, json.dumps(tr.to_dict()),
          int(tr.passed), tr.primary_error_type, tr.num_passed, tr.num_total,
          attempt.feedback_given, attempt.feedback_produced, attempt.raw_response,
-         attempt.tokens_in, attempt.tokens_out, attempt.latency_s, tr.duration_s),
+         attempt.tokens_in, attempt.tokens_out, attempt.latency_s, tr.duration_s,
+         attempt.candidates, attempt.verifier_score),
     )
 
 

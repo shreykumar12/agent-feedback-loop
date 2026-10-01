@@ -22,7 +22,12 @@ TEMPLATE_PATH = Path(__file__).with_name("report_template.html")
 
 def config_key(run: dict) -> str:
     suite = run.get("suite") or "easy"
-    return f"{run['model']} · {suite} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
+    key = f"{run['model']} · {suite} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
+    if (run.get("candidates") or 1) > 1:
+        key += f" · best-of-{run['candidates']}"
+        if run.get("verifier"):
+            key += f" ({Path(run['verifier']).stem})"
+    return key
 
 
 def _mean(values):

@@ -55,11 +55,69 @@ def cmd_run(args) -> int:
                 model=args.model, prompt_version=args.prompt_version, task_ids=args.tasks,
                 use_judge=args.judge, feedback_level=args.feedback_level, max_tries=args.max_tries,
                 seed=seed, workers=args.workers, notes=args.notes, suite=args.suite,
+                candidates=args.candidates, verifier=args.verifier, sample_temperature=args.sample_temperature,
             )
             print(run_id)
-    except AgentError as exc:
+    except (AgentError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _verifier_datasets(args):
+    from agent_eval.ml import verifier as vf
+    from agent_eval.tasks import load_tasks
+
+    train_tasks = [t for s in args.train_suites for t in load_tasks(suite=s)]
+    eval_tasks = [t for s in args.eval_suites for t in load_tasks(suite=s)]
+    eval_ids = {t.task_id for t in eval_tasks}
+    overlap = {t.task_id for t in train_tasks} & eval_ids
+    if overlap:
+        raise ValueError(f"train and eval suites share {len(overlap)} tasks; the test numbers would be meaningless")
+    train = vf.examples_from_tasks(train_tasks)
+    test = vf.examples_from_tasks(eval_tasks)
+    if args.with_attempts:
+        from agent_eval import storage
+
+        storage.init_db()
+        attempts = vf.examples_from_db()
+        train += [e for e in attempts if e.task_id not in eval_ids]
+        test += [e for e in attempts if e.task_id in eval_ids]
+    train, val = vf.split_by_task(vf.dedupe(train), val_fraction=0.15, seed=args.seed)
+    return train, val, vf.dedupe(test)
+
+
+def cmd_train_verifier(args) -> int:
+    from agent_eval.ml import verifier as vf
+
+    try:
+        train, val, test = _verifier_datasets(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"train {len(train)} examples ({sum(e.label for e in train)} pass) on "
+          f"{len({e.task_id for e in train})} tasks | val {len(val)} | test {len(test)} on held-out suites "
+          f"{' + '.join(args.eval_suites)}")
+    model_cfg = vf.VerifierConfig(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads, d_ff=args.d_model * 3)
+    verifier, result = vf.train_verifier(train, val, model_cfg, vf.TrainConfig(
+        epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed))
+    test_metrics = vf.evaluate(verifier, test)
+    print(f"\nbest epoch {result.best_epoch}")
+    print("val :", vf.summarize(result.val))
+    print("test:", vf.summarize(test_metrics))
+    path = verifier.save(args.out, {"val": result.val, "test": test_metrics, "history": result.history,
+                                    "train_suites": args.train_suites, "eval_suites": args.eval_suites})
+    print(f"saved {path}")
+    return 0
+
+
+def cmd_eval_verifier(args) -> int:
+    from agent_eval.ml import verifier as vf
+    from agent_eval.tasks import load_tasks
+
+    v = vf.load_verifier(args.path)
+    for suite in args.suites:
+        print(f"{suite:<6}", vf.summarize(vf.evaluate(v, vf.examples_from_tasks(load_tasks(suite=suite)))))
     return 0
 
 
@@ -275,8 +333,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--judge", action="store_true", help="score passing code with the LLM judge")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--seeds", type=int, default=1, help="repeat with N consecutive seeds")
+    p.add_argument("--candidates", type=int, default=1,
+                   help="best-of-N: sample N programs per attempt, the --verifier picks which one is tested")
+    p.add_argument("--verifier", default=None, help="path to a trained verifier (python main.py train-verifier)")
+    p.add_argument("--sample-temperature", type=float, default=0.8,
+                   help="temperature for candidates 2..N (candidate 1 uses the normal setting)")
     _add_loop_args(p)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("train-verifier", help="train the from-scratch PyTorch pass/fail verifier")
+    p.add_argument("--train-suites", nargs="+", default=["train"],
+                   help="suites whose reference solutions + mutants are training data")
+    p.add_argument("--eval-suites", nargs="+", default=["easy", "hard"], help="held-out test suites")
+    p.add_argument("--with-attempts", action="store_true",
+                   help="also learn from every stored attempt (labeled by its sandbox verdict)")
+    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--d-model", type=int, default=128)
+    p.add_argument("--layers", type=int, default=3)
+    p.add_argument("--heads", type=int, default=4)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out", default="models/verifier.pt")
+    p.set_defaults(func=cmd_train_verifier)
+
+    p = sub.add_parser("eval-verifier", help="score a trained verifier on suites' references + mutants")
+    p.add_argument("path")
+    p.add_argument("--suites", nargs="+", default=["easy", "hard"])
+    p.set_defaults(func=cmd_eval_verifier)
 
     p = sub.add_parser("runs", help="list stored runs")
     p.add_argument("--limit", type=int, default=30)

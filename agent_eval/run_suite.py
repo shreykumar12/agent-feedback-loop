@@ -50,8 +50,11 @@ def run_suite(
     notes: str = "",
     quiet: bool = False,
     suite: str | None = None,
+    candidates: int = 1,
+    verifier: str | None = None,
+    sample_temperature: float = 0.8,
 ) -> str:
-    if not agent.is_simulated(model) and not config.LLM_API_KEY:
+    if agent.needs_api_key(model) and not config.LLM_API_KEY:
         raise agent.AgentError(
             f"No API key for {model!r}. Set GEMINI_API_KEY (or LLM_API_KEY) in .env, "
             "or run offline with a simulated model: --model sim-base"
@@ -67,7 +70,12 @@ def run_suite(
         feedback_level=feedback_level or config.FEEDBACK_LEVEL,
         max_tries=max_tries or config.MAX_TRIES,
         seed=seed,
+        candidates=candidates,
+        verifier=verifier,
+        sample_temperature=sample_temperature,
     )
+    if candidates > 1 and not verifier:
+        raise ValueError("--candidates > 1 needs --verifier PATH (the verifier picks among them)")
     run = RunInfo(
         run_id=uuid.uuid4().hex,
         model=model,
@@ -79,6 +87,8 @@ def run_suite(
         seed=seed,
         notes=notes,
         suite=suite_name(suite),
+        candidates=candidates,
+        verifier=verifier or "",
     )
     storage.create_run(run)
     log = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))

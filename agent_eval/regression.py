@@ -118,7 +118,8 @@ def compare_results(baseline_run: dict, candidate_run: dict,
 
     changed = {
         key: (baseline_run.get(key), candidate_run.get(key))
-        for key in ("model", "prompt_version", "feedback_level", "max_tries", "seed")
+        for key in ("model", "prompt_version", "feedback_level", "max_tries", "seed", "suite",
+                    "candidates", "verifier")
         if baseline_run.get(key) != candidate_run.get(key)
     }
     return {
@@ -347,7 +348,8 @@ def compare_groups(baseline_ids: list[str], candidate_ids: list[str]) -> dict:
     warnings = []
     for name in ("baseline", "candidate"):
         runs = groups[name]["runs"]
-        configs = {(r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"]) for r in runs}
+        configs = {(r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"], r.get("suite"),
+                    r.get("candidates"), r.get("verifier")) for r in runs}
         if len(configs) > 1:
             warnings.append(f"{name} group mixes {len(configs)} configurations")
         if len({r["seed"] for r in runs}) < len(runs):

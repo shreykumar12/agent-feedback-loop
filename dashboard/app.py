@@ -84,7 +84,8 @@ def run_label(r: dict) -> str:
 
 
 def config_tuple(r: dict) -> tuple:
-    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"], r.get("suite") or "easy")
+    variant = f"{r.get('candidates') or 1}:{r.get('verifier') or ''}"
+    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"], r.get("suite") or "easy", variant)
 
 
 def series_label(model: str, prompt: str, k: int, suite: str = "easy") -> str:
@@ -174,12 +175,12 @@ def config_table(dbk: str) -> list[dict]:
     for r in load_runs(dbk):
         groups[config_tuple(r)].append(r)
     rows = []
-    for (model, prompt, fb, k, suite), runs in groups.items():
+    for (model, prompt, fb, k, suite, variant), runs in groups.items():
         summaries = [load_summary(dbk, r["run_id"]) for r in runs]
         agg = metrics.aggregate_summaries(summaries)
         tps = [s["tokens_per_solved"] for s in summaries if s["tokens_per_solved"] is not None]
         rows.append({
-            "key": (model, prompt, fb, k, suite), "label": config_key(runs[0]),
+            "key": (model, prompt, fb, k, suite, variant), "label": config_key(runs[0]),
             "model": model, "prompt_version": prompt, "feedback_level": fb, "max_tries": k, "suite": suite,
             "run_ids": [r["run_id"] for r in runs], "seeds": sorted(r["seed"] for r in runs),
             "agg": agg, "tokens_per_solved": sum(tps) / len(tps) if tps else None,

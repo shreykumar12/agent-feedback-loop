@@ -125,6 +125,8 @@ class Attempt:
     tokens_in: int = 0
     tokens_out: int = 0
     latency_s: float = 0.0
+    candidates: int = 1  # best-of-N pool size this attempt was chosen from
+    verifier_score: float | None = None  # learned verifier's P(pass) for the chosen code
 
 
 @dataclass
@@ -153,3 +155,5 @@ class RunInfo:
     seed: int = 0
     notes: str = ""
     suite: str = "easy"
+    candidates: int = 1
+    verifier: str = ""

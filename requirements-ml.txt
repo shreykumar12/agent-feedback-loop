@@ -1,0 +1,15 @@
+# Optional ML stack: local models through LangChain, LoRA self-training, and the
+# learned verifier. Install on top of requirements.txt:
+#
+#   pip install -r requirements.txt -r requirements-ml.txt
+#
+# On Apple Silicon this PyTorch build uses the GPU via MPS automatically; on a
+# CUDA machine install the matching torch wheel first (see pytorch.org).
+torch==2.14.1
+transformers==5.18.0
+peft==0.21.1
+accelerate==1.15.0
+tokenizers==0.23.2
+safetensors==0.8.0
+langchain-huggingface==1.2.2
+huggingface-hub==1.33.0

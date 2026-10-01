@@ -202,7 +202,11 @@ class VerifierConfig:
     max_len: int = 2048
     prompt_budget: int = 256
     patch: int = 4  # bytes per token after the patch embedding
-    canonical_names: bool = False  # rename identifiers to v0, v1, ... before encoding
+    # Rename identifiers to v0, v1, ... before encoding. Measured: held-out AUC
+    # 0.73 -> 0.84 and best-of-5 pass@1 +10 -> +23 pp on unseen generated tasks,
+    # and it removed a vocabulary shortcut that made the verifier harmful on the
+    # hand-written benchmarks (-20 pp -> not significant).
+    canonical_names: bool = True
 
 
 class MultiHeadSelfAttention(nn.Module):

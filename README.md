@@ -129,6 +129,31 @@ Training uses a pairwise ranking loss (a task's passing program should score abo
 
 The fine-tuning data has three kinds of example: first-try passes, **repairs** (failing code + feedback → the fix that passed, which teaches the model to use feedback), and **distilled retries** (the first prompt → code that only passed later). Only sandbox-verified code is ever a training target. The training suite (`tasks/tasks_train.json`) is 400 procedurally generated tasks from 38 families, validated like the eval suites (1,340 mutants, all caught), with no overlap with them. `selftrain` refuses to run if the training and eval suites share a task. Each round is stored, and `python main.py curve`, the report and the dashboard's Self-training tab show the learning curve.
 
+### Verifier results (measured)
+
+The verifier was trained on the 400 generated training tasks (1,477 labeled programs from 340 tasks). It was validated on 60 *unseen* generated tasks and tested on the 40 hand-written benchmark tasks, none of which it saw in training.
+
+| | Plain bytes | Identifiers canonicalized (default) |
+|---|---|---|
+| Unseen generated tasks: ROC-AUC | 0.73 | **0.84** |
+| Unseen generated tasks: calibration error (ECE) | 0.21 | **0.13** |
+| Benchmark suites: ROC-AUC | 0.45 (reversed) | 0.50 (chance) |
+
+**In the loop** (sim-weak agent, one try, best-of-5 vs. single sample, 3 seeds, paired by seed and task):
+
+| Tasks | Single sample | Best-of-5 + verifier | Paired McNemar |
+|---|---|---|---|
+| 60 unseen generated tasks | 43.3% | **66.7% (+23.3 pp)** | 60 gained / 18 lost, p = 2×10⁻⁶ |
+| Easy benchmark suite | 38.3% | 31.7% (−6.7 pp) | p = 0.48 (n.s.) |
+| Hard benchmark suite | 20.0% | 16.7% (−3.3 pp) | p = 0.79 (n.s.) |
+
+What this shows:
+- **A from-scratch verifier generalizes to unseen tasks from its training distribution,** and reranking with it raises pass@1 by 23 points.
+- **It doesn't transfer to differently-written code.** Before identifier canonicalization it actively *hurt* the benchmark suites (−20 pp, p = 0.002): it had learned a vocabulary shortcut that holds in generated code and reverses in human-written code. Canonicalization removed the harm, but not the gap.
+- **Validate a learned reranker on the distribution you'll use it on.** The project's own paired regression test is what caught the harmful version. Training on real model attempts (`--with-attempts`) is the natural next step to close the gap.
+
+(The simulated agent's candidates are the tasks' reference solutions and mutants, so these numbers measure the verifier's ranking quality in the real loop. They are not claims about an LLM's raw ability.)
+
 **On an 8 GB Apple Silicon Mac:** a 0.5B model (e.g. Qwen2.5-Coder-0.5B-Instruct) fits for both generation and LoRA training, in fp32 with gradient checkpointing. 1.5B models are better trained on a CUDA GPU (e.g. Colab). The verifier trains in minutes on CPU and faster on MPS.
 
 ```bash
@@ -261,7 +286,8 @@ VERDICT: REGRESSION
 
 ## Testing
 
-`pytest` runs 147 tests in about 100 s, with no API key, so CI runs them on every push:
+`pytest` runs 175 tests in about 3.5 minutes, with no API key and no model download, so CI runs them on every push. The 28 ML tests skip automatically if PyTorch isn't installed.
+- **ML:** a tiny locally built Llama runs through LangChain and the loop; SFT export only targets sandbox-verified code; LoRA lowers the loss and its adapter loads back; the verifier learns and round-trips; AUC and selection math (ties never broken by label); best-of-N is paired with single-sample and beats it with an oracle verifier; self-training rounds record a curve and refuse train/eval overlap; the training generator is deterministic, varied, valid, and disjoint from the eval suites.
 - **Sandbox:** timeouts that `except Exception` can't swallow, the global kill backstop, memory limit, secret stripping, isolation between runs, `sys.exit`.
 - **Feedback:** content at each level, truncation, and the hidden-test policy.
 - **Graph:** a scripted fake agent covers first-try pass, pass after retries, the max-tries stop, and that retry prompts receive the previous code and feedback.

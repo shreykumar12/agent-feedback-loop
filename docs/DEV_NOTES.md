@@ -138,3 +138,10 @@ Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
      max pooling; more steps (lr 1e-3, 25 epochs). Overfit check then hit AUC ~0.9.
   4. Also fixed a metric bug: best-of-N selection broke score ties using the label.
 - Hard suite still has 28% indistinguishable pairs at 2048 bytes (long programs).
+- Verifier results (train: 400 generated tasks; val: 60 unseen generated; test: easy+hard):
+  plain bytes val AUC 0.734 / test 0.452; canonical names val 0.837 / test 0.504.
+  In-loop (sim-weak, max_tries 1, best-of-5, seeds 0-2, paired McNemar):
+    plain:  held-out generated 43.3 -> 53.3 (+10, p=0.033); easy 38.3 -> 18.3 (-20, p=0.002)
+    canon:  held-out generated 43.3 -> 66.7 (+23.3, p=2e-6); easy -6.7 (p=0.48); hard -3.3 (p=0.79)
+  => canonical_names is the default. Code length is NOT the shortcut (AUC(length) ~0.50).
+  Next step to close the gap: train on real LLM attempts (--with-attempts).

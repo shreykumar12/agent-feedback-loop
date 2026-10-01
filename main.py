@@ -409,8 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--canonical-names", action="store_true",
-                   help="rename identifiers to v0, v1, ... so the model can't key on task-specific names")
+    p.add_argument("--no-canonical-names", dest="canonical_names", action="store_false",
+                   help="keep original identifiers (default renames them to v0, v1, ... so the model "
+                        "can't key on task-specific names)")
     p.add_argument("--out", default="models/verifier.pt")
     p.set_defaults(func=cmd_train_verifier)
 

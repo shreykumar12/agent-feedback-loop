@@ -138,8 +138,8 @@ def test_variation_changes_the_code_not_just_names():
 def test_write_training_suite_drops_invalid_tasks(tmp_path, monkeypatch):
     real = training_tasks.generate_training_tasks
 
-    def with_a_broken_one(n, seed=0, families=None):
-        tasks = real(n, seed=seed, families=families)
+    def with_a_broken_one(n, seed=0, families=None, **kwargs):
+        tasks = real(n, seed=seed, families=families, **kwargs)
         tasks[0] = dict(tasks[0], canonical_solution=tasks[0]["mutants"][0])
         return tasks
 

@@ -105,7 +105,41 @@ def split_by_task(examples: list[Example], val_fraction: float = 0.15, seed: int
 
 # --- tokenizer ----------------------------------------------------------------
 
-def normalize_code(code: str) -> str:
+class _RenameIdentifiers(ast.NodeTransformer):
+    """Rename user-defined names to v0, v1, ... in order of first appearance.
+    Builtins (len, range, ...) and attributes (x.append) keep their names, so
+    the model sees structure and library calls, not task-specific vocabulary."""
+
+    def __init__(self):
+        import builtins
+
+        self.keep = set(dir(builtins))
+        self.names: dict[str, str] = {}
+
+    def _new(self, name: str) -> str:
+        if name in self.keep:
+            return name
+        if name not in self.names:
+            self.names[name] = f"v{len(self.names)}"
+        return self.names[name]
+
+    def visit_Name(self, node):
+        node.id = self._new(node.id)
+        return node
+
+    def visit_arg(self, node):
+        node.arg = self._new(node.arg)
+        return node
+
+    def _visit_def(self, node):
+        node.name = self._new(node.name)
+        self.generic_visit(node)
+        return node
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _visit_def
+
+
+def normalize_code(code: str, canonical_names: bool = False) -> str:
     """Drop docstrings and comments and canonicalize formatting (via the AST) so
     the byte budget is spent on logic. Reference solutions repeat the whole task
     docstring; without this, the differing lines of a pass/fail pair often fall
@@ -121,6 +155,8 @@ def normalize_code(code: str) -> str:
             if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
                     and isinstance(body[0].value.value, str):
                 node.body = body[1:] or [ast.Pass()]
+    if canonical_names:
+        tree = _RenameIdentifiers().visit(tree)
     try:
         return ast.unparse(tree)
     except Exception:
@@ -132,16 +168,17 @@ class ByteTokenizer:
     OFFSET = 3
     vocab_size = 256 + OFFSET
 
-    def __init__(self, max_len: int = 2048, prompt_budget: int = 256):
+    def __init__(self, max_len: int = 2048, prompt_budget: int = 256, canonical_names: bool = False):
         self.max_len = max_len
         self.prompt_budget = prompt_budget
+        self.canonical_names = canonical_names
 
     def _bytes(self, text: str, limit: int) -> list[int]:
         return [b + self.OFFSET for b in text.encode("utf-8", "replace")[:limit]]
 
     def encode(self, prompt: str, code: str) -> list[int]:
         p = self._bytes(prompt, self.prompt_budget)
-        c = self._bytes(normalize_code(code), self.max_len - len(p) - 2)
+        c = self._bytes(normalize_code(code, self.canonical_names), self.max_len - len(p) - 2)
         return [self.CLS, *p, self.SEP, *c]
 
     def batch(self, pairs: list[tuple[str, str]]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -165,6 +202,7 @@ class VerifierConfig:
     max_len: int = 2048
     prompt_budget: int = 256
     patch: int = 4  # bytes per token after the patch embedding
+    canonical_names: bool = False  # rename identifiers to v0, v1, ... before encoding
 
 
 class MultiHeadSelfAttention(nn.Module):
@@ -309,7 +347,7 @@ class Verifier:
     def __init__(self, net: VerifierNet, device: str | None = None):
         self.device = device or pick_device()
         self.net = net.to(self.device).eval()
-        self.tok = ByteTokenizer(net.cfg.max_len, net.cfg.prompt_budget)
+        self.tok = ByteTokenizer(net.cfg.max_len, net.cfg.prompt_budget, net.cfg.canonical_names)
 
     @torch.no_grad()
     def score_batch(self, pairs: list[tuple[str, str]], batch_size: int = 64) -> list[float]:
@@ -397,7 +435,7 @@ def train_verifier(train: list[Example], val: list[Example], model_cfg: Verifier
 
         torch.set_num_threads(max(1, os.cpu_count() or 1))
     net = VerifierNet(model_cfg).to(device)
-    tok = ByteTokenizer(model_cfg.max_len, model_cfg.prompt_budget)
+    tok = ByteTokenizer(model_cfg.max_len, model_cfg.prompt_budget, model_cfg.canonical_names)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     steps = cfg.epochs * len(task_batches(train, cfg.batch_size, random.Random(0)))
     sched = torch.optim.lr_scheduler.LambdaLR(

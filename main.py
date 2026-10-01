@@ -98,7 +98,8 @@ def cmd_train_verifier(args) -> int:
     print(f"train {len(train)} examples ({sum(e.label for e in train)} pass) on "
           f"{len({e.task_id for e in train})} tasks | val {len(val)} | test {len(test)} on held-out suites "
           f"{' + '.join(args.eval_suites)}")
-    model_cfg = vf.VerifierConfig(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads, d_ff=args.d_model * 3)
+    model_cfg = vf.VerifierConfig(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads, d_ff=args.d_model * 3,
+                                  canonical_names=args.canonical_names)
     verifier, result = vf.train_verifier(train, val, model_cfg, vf.TrainConfig(
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed))
     test_metrics = vf.evaluate(verifier, test)
@@ -408,6 +409,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--canonical-names", action="store_true",
+                   help="rename identifiers to v0, v1, ... so the model can't key on task-specific names")
     p.add_argument("--out", default="models/verifier.pt")
     p.set_defaults(func=cmd_train_verifier)
 

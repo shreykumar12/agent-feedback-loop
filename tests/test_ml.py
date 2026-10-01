@@ -201,3 +201,12 @@ def test_selftrain_needs_a_local_model(tmp_db):
 
     with pytest.raises(ValueError, match="local model"):
         selftrain.self_train(selftrain.SelfTrainConfig(base_model="sim-base", experiment="x"))
+
+
+def test_normalize_code_strips_docs_and_can_canonicalize_names():
+    code = 'def total(items, tax):\n    """Doc."""\n    s = 0  # note\n    for it in items:\n        s += len(it)\n    return s\n'
+    plain = vf.normalize_code(code)
+    assert "Doc." not in plain and "note" not in plain and "def total(items, tax)" in plain
+    canon = vf.normalize_code(code, canonical_names=True)
+    assert canon.startswith("def v0(v1, v2):") and "len(" in canon  # builtins keep their names
+    assert vf.normalize_code("def broken(:", canonical_names=True) == "def broken(:"  # unparsable stays verbatim

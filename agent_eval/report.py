@@ -21,7 +21,13 @@ TEMPLATE_PATH = Path(__file__).with_name("report_template.html")
 
 
 def config_key(run: dict) -> str:
-    return f"{run['model']} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
+    suite = run.get("suite") or "easy"
+    key = f"{run['model']} · {suite} · {run['prompt_version']} · fb={run['feedback_level']} · k={run['max_tries']}"
+    if (run.get("candidates") or 1) > 1:
+        key += f" · best-of-{run['candidates']}"
+        if run.get("verifier"):
+            key += f" ({Path(run['verifier']).stem})"
+    return key
 
 
 def _mean(values):
@@ -119,6 +125,10 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
     for diff, d in focus["by_difficulty"].items():
         difficulty_rows.append({"difficulty": diff, "segment": "Solved on try 1", "value": d["pass_at_1"], "n": d["n"], "final": d["pass_rate"]})
         difficulty_rows.append({"difficulty": diff, "segment": "Solved by a retry", "value": d["lift"], "n": d["n"], "final": d["pass_rate"]})
+    category_rows = []
+    for cat, d in focus["by_category"].items():
+        category_rows.append({"category": cat, "segment": "Solved on try 1", "value": d["pass_at_1"], "n": d["n"], "final": d["pass_rate"]})
+        category_rows.append({"category": cat, "segment": "Solved by a retry", "value": d["lift"], "n": d["n"], "final": d["pass_rate"]})
     error_rows = [{"error_type": k, "count": v} for k, v in focus["error_counts"].items()]
     partial_rows = [{"k": i + 1, "credit": v} for i, v in enumerate(focus["partial_credit"]) if v is not None]
 
@@ -126,13 +136,23 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
     if compare:
         comparison = regression.compare_runs(*compare)
 
+    curves = []
+    from agent_eval.ml import selftrain  # stdlib-only at import time; no torch needed
+
+    for experiment in selftrain.list_experiments():
+        for row in selftrain.learning_curve(experiment):
+            for metric, label in (("pass_at_1", "pass@1"), ("pass_rate", "final")):
+                curves.append({"experiment": experiment, "round": row["round"], "suite": row["suite"],
+                               "metric": label, "value": row[metric], "examples": row["examples"],
+                               "repairs": row["repair_examples"]})
+
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "simulated": any(r["model"].startswith("sim") for r in runs),
         "num_runs": len(runs),
         "focus": focus,
         "focus_run": {k: focus_run.get(k) for k in ("run_id", "model", "prompt_version", "feedback_level",
-                                                    "max_tries", "seed", "timestamp", "suite_hash", "notes")},
+                                                    "max_tries", "seed", "timestamp", "suite_hash", "notes", "suite")},
         "configs": configs,
         "pass_at_k": pass_at_k_rows,
         "ablation": ablation_rows,
@@ -140,9 +160,11 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
         "tries": tries_rows,
         "transitions": transitions,
         "difficulty": difficulty_rows,
+        "category": category_rows,
         "errors": error_rows,
         "partial": partial_rows,
         "comparison": comparison,
+        "curves": curves,
         "runs": [{k: r.get(k) for k in ("run_id", "timestamp", "model", "prompt_version", "feedback_level",
                                         "max_tries", "seed", "num_tasks", "pass_rate", "notes")} for r in runs],
     }

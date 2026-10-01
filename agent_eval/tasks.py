@@ -22,14 +22,34 @@ from agent_eval.models import Task
 
 REQUIRED_FIELDS = ("task_id", "prompt", "entry_point", "test_code")
 DIFFICULTIES = ("easy", "medium", "hard")
+CATEGORIES = ("function", "bugfix", "stateful", "spec", "performance")
 
 
 class TaskFormatError(ValueError):
     pass
 
 
-def load_tasks(path: Path | None = None, task_ids: list[str] | None = None) -> list[Task]:
-    path = Path(path or config.TASKS_PATH)
+def suite_path(suite: str | None) -> Path:
+    """A suite name ("easy", "hard") or a path to a tasks JSON file."""
+    if not suite:
+        return Path(config.TASKS_PATH) if config.DEFAULT_SUITE == "easy" else suite_path(config.DEFAULT_SUITE)
+    if suite in config.SUITES:
+        return Path(config.SUITES[suite])
+    path = Path(suite)
+    if not path.exists():
+        raise TaskFormatError(f"unknown suite {suite!r}: use one of {sorted(config.SUITES)} or a path to a JSON file")
+    return path
+
+
+def suite_name(suite: str | None) -> str:
+    if not suite:
+        return config.DEFAULT_SUITE
+    return suite if suite in config.SUITES else Path(suite).stem
+
+
+def load_tasks(path: Path | None = None, task_ids: list[str] | None = None,
+               suite: str | None = None) -> list[Task]:
+    path = Path(path) if path else suite_path(suite)
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise TaskFormatError(f"{path} must contain a JSON list of tasks")
@@ -46,6 +66,9 @@ def load_tasks(path: Path | None = None, task_ids: list[str] | None = None) -> l
         difficulty = entry.get("difficulty", "medium")
         if difficulty not in DIFFICULTIES:
             raise TaskFormatError(f"{entry['task_id']}: difficulty must be one of {DIFFICULTIES}")
+        category = entry.get("category", "function")
+        if category not in CATEGORIES:
+            raise TaskFormatError(f"{entry['task_id']}: category must be one of {CATEGORIES}")
         tasks.append(Task(
             task_id=entry["task_id"],
             prompt=entry["prompt"],
@@ -55,6 +78,8 @@ def load_tasks(path: Path | None = None, task_ids: list[str] | None = None) -> l
             tags=list(entry.get("tags", [])),
             canonical_solution=entry.get("canonical_solution"),
             mutants=list(entry.get("mutants", [])),
+            category=category,
+            per_test_timeout=entry.get("per_test_timeout"),
         ))
 
     if task_ids:

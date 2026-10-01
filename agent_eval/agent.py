@@ -49,6 +49,8 @@ class Generation:
     tokens_in: int = 0
     tokens_out: int = 0
     latency_s: float = 0.0
+    candidates: int = 1
+    verifier_score: float | None = None
 
 
 _FENCE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)(?:```|\Z)", re.DOTALL)
@@ -66,7 +68,8 @@ def extract_code(response_text: str, entry_point: str | None = None) -> str:
         return text.strip() + "\n" if text.strip() else ""
     python_blocks = [b for lang, b in blocks if lang in ("python", "py", "python3")] or [b for _, b in blocks]
     if entry_point:
-        defining = [b for b in python_blocks if re.search(rf"\bdef\s+{re.escape(entry_point)}\s*\(", b)]
+        defining = [b for b in python_blocks
+                    if re.search(rf"\b(?:def|class)\s+{re.escape(entry_point)}\b", b)]
         if defining:
             python_blocks = defining
     return max(python_blocks, key=len).strip() + "\n"
@@ -74,6 +77,15 @@ def extract_code(response_text: str, entry_point: str | None = None) -> str:
 
 def is_simulated(model: str) -> bool:
     return model.startswith("sim")
+
+
+def is_local(model: str) -> bool:
+    """A local Hugging Face / PyTorch model (``hf:<repo-or-path>[+<adapter>]``)."""
+    return model.startswith("hf:")
+
+
+def needs_api_key(model: str) -> bool:
+    return not (is_simulated(model) or is_local(model))
 
 
 @lru_cache(maxsize=8)
@@ -125,10 +137,12 @@ def _is_daily_quota(text: str) -> bool:
     return "PerDay" in text or "per day" in text.lower() or "daily" in text.lower()
 
 
-def _call_llm(model: str, system: str, user: str) -> tuple[str, int, int]:
+def _call_llm(model: str, system: str, user: str, temperature: float | None = None) -> tuple[str, int, int]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     client = _chat_client(model)
+    if temperature is not None:
+        client = client.bind(temperature=temperature)
     for attempt in range(config.LLM_RATE_LIMIT_RETRIES + 1):
         _limiter.wait(config.LLM_RPM)
         try:
@@ -160,10 +174,15 @@ def generate(
     history: list[str] | None = None,
     attempt_number: int = 1,
     seed: int = 0,
+    temperature: float | None = None,
 ) -> Generation:
+    """One model response for a first attempt or a retry.
+
+    `temperature` overrides the configured value for this call; best-of-N
+    sampling uses it to draw diverse candidates (with a different `seed` each)."""
     model = model or config.GENERATOR_MODEL
     prompt_version = prompt_version or config.DEFAULT_PROMPT_VERSION
-    system, user = prompts.render(prompt_version, task.prompt, previous_code, feedback)
+    system, user = prompts.render(prompt_version, task.prompt, previous_code, feedback, task.category)
 
     start = time.perf_counter()
     if is_simulated(model):
@@ -173,8 +192,14 @@ def generate(
             model, task, system, user, feedback=feedback, history=history or [],
             attempt_number=attempt_number, seed=seed,
         )
+    elif is_local(model):
+        from agent_eval.ml import local_model
+
+        raw, tokens_in, tokens_out = local_model.load(model).invoke(
+            system, user, temperature=config.TEMPERATURE if temperature is None else temperature, seed=seed)
+        latency = time.perf_counter() - start
     else:
-        raw, tokens_in, tokens_out = _call_llm(model, system, user)
+        raw, tokens_in, tokens_out = _call_llm(model, system, user, temperature)
         latency = time.perf_counter() - start
     return Generation(
         code=extract_code(raw, task.entry_point),

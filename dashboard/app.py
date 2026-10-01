@@ -84,11 +84,12 @@ def run_label(r: dict) -> str:
 
 
 def config_tuple(r: dict) -> tuple:
-    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"])
+    variant = f"{r.get('candidates') or 1}:{r.get('verifier') or ''}"
+    return (r["model"], r["prompt_version"], r["feedback_level"], r["max_tries"], r.get("suite") or "easy", variant)
 
 
-def series_label(model: str, prompt: str, k: int) -> str:
-    return f"{model} · {prompt} · k={k}"
+def series_label(model: str, prompt: str, k: int, suite: str = "easy") -> str:
+    return f"{model} · {suite} · {prompt} · k={k}"
 
 
 def fb_rank(level: str) -> int:
@@ -174,17 +175,17 @@ def config_table(dbk: str) -> list[dict]:
     for r in load_runs(dbk):
         groups[config_tuple(r)].append(r)
     rows = []
-    for (model, prompt, fb, k), runs in groups.items():
+    for (model, prompt, fb, k, suite, variant), runs in groups.items():
         summaries = [load_summary(dbk, r["run_id"]) for r in runs]
         agg = metrics.aggregate_summaries(summaries)
         tps = [s["tokens_per_solved"] for s in summaries if s["tokens_per_solved"] is not None]
         rows.append({
-            "key": (model, prompt, fb, k), "label": config_key(runs[0]),
-            "model": model, "prompt_version": prompt, "feedback_level": fb, "max_tries": k,
+            "key": (model, prompt, fb, k, suite, variant), "label": config_key(runs[0]),
+            "model": model, "prompt_version": prompt, "feedback_level": fb, "max_tries": k, "suite": suite,
             "run_ids": [r["run_id"] for r in runs], "seeds": sorted(r["seed"] for r in runs),
             "agg": agg, "tokens_per_solved": sum(tps) / len(tps) if tps else None,
         })
-    rows.sort(key=lambda c: (c["model"], c["prompt_version"], c["max_tries"], fb_rank(c["feedback_level"])))
+    rows.sort(key=lambda c: (c["suite"], c["model"], c["prompt_version"], c["max_tries"], fb_rank(c["feedback_level"])))
     return rows
 
 
@@ -413,7 +414,7 @@ def section_leaderboard(configs: list[dict]) -> None:
         m = c["agg"][agg_key]
         if m["mean"] is None:
             continue
-        rows.append({"series": series_label(c["model"], c["prompt_version"], c["max_tries"]),
+        rows.append({"series": series_label(c["model"], c["prompt_version"], c["max_tries"], c["suite"]),
                      "feedback_level": c["feedback_level"], "mean": m["mean"], "std": m["std"],
                      "lo": m["mean"] - m["std"], "hi": m["mean"] + m["std"], "runs": c["agg"]["num_runs"]})
     df = pd.DataFrame(rows)
@@ -436,7 +437,7 @@ def section_leaderboard(configs: list[dict]) -> None:
     st.markdown("**pass@k per configuration** (mean across seeds)")
     by_series: dict[str, list[dict]] = defaultdict(list)
     for c in configs:
-        by_series[series_label(c["model"], c["prompt_version"], c["max_tries"])].append(c)
+        by_series[series_label(c["model"], c["prompt_version"], c["max_tries"], c["suite"])].append(c)
     all_levels = sorted({c["feedback_level"] for c in configs}, key=fb_rank)
     # Same entity -> color mapping as the HTML report: full=slot 1, names=2, minimal=3, none=4.
     color_order = ["full", "names", "minimal", "none"]
@@ -786,6 +787,51 @@ def section_quality(run: dict, summary: dict) -> None:
     st.dataframe(pd.DataFrame(rows), hide_index=True)
 
 
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def load_curves(dbk: str) -> list[dict]:
+    from agent_eval.ml import selftrain  # stdlib-only at import; no torch needed
+
+    return [row | {"experiment": name} for name in selftrain.list_experiments()
+            for row in selftrain.learning_curve(name)]
+
+
+def section_selftrain() -> None:
+    st.subheader("Self-training learning curve")
+    st.caption("Each round fine-tunes a LoRA adapter on the model's own sandbox-verified successes "
+               "(first-try passes, repairs after feedback, distilled retries) from TRAINING tasks, then "
+               "re-evaluates on the held-out suites. Round 0 is the base model.")
+    rows = load_curves(db_key())
+    if not rows:
+        st.info("No self-training experiments yet. Run e.g. "
+                "`python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment first --rounds 3`.")
+        return
+    experiments = sorted({r["experiment"] for r in rows})
+    name = st.selectbox("Experiment", experiments, key="curve_experiment")
+    df = pd.DataFrame([r for r in rows if r["experiment"] == name])
+    last, first = df[df["round"] == df["round"].max()], df[df["round"] == 0]
+    cols = st.columns(len(first))
+    for col, (_, base_row) in zip(cols, first.iterrows(), strict=False):
+        end = last[last["suite"] == base_row["suite"]].iloc[0]
+        col.metric(f"{base_row['suite']} pass@1 (round {int(end['round'])})", pct(end["pass_at_1"]),
+                   delta=pp(end["pass_at_1"] - base_row["pass_at_1"]), border=True,
+                   help="Change vs. the base model (round 0) on the held-out suite.")
+    long = df.melt(id_vars=["round", "suite"], value_vars=["pass_at_1", "pass_rate"],
+                   var_name="metric", value_name="value")
+    long["metric"] = long["metric"].map({"pass_at_1": "pass@1", "pass_rate": "final"})
+    enc = {
+        "x": alt.X("round:O", title="self-training round", axis=alt.Axis(labelAngle=0)),
+        "y": alt.Y("value:Q", title="pass rate", scale=alt.Scale(domain=[0, 1]), axis=alt.Axis(format="%")),
+        "color": alt.Color("suite:N", scale=cat_scale(sorted(long["suite"].unique())), title="eval suite",
+                           legend=alt.Legend(orient="top")),
+        "strokeDash": alt.StrokeDash("metric:N", title=None, legend=alt.Legend(orient="top")),
+        "tooltip": ["round:O", "suite:N", "metric:N", alt.Tooltip("value:Q", format=".1%")],
+    }
+    base = alt.Chart(long).encode(**enc)
+    chart = (base.mark_line(strokeWidth=2) + base.mark_point(filled=True, size=POINT)).properties(height=320)
+    show_chart(chart, df[["round", "suite", "examples", "repair_examples", "pass_at_1", "pass_rate",
+                          "recovery_rate", "mean_tries_to_pass", "train_loss", "model"]])
+
+
 # --- page ------------------------------------------------------------------------
 
 def main() -> None:
@@ -836,7 +882,7 @@ def main() -> None:
             scope += f" · “{run['notes']}”"
 
     tabs = st.tabs(["Overview", "Leaderboard & ablation", "Regression", "Task drill-down", "Solve matrix",
-                    "Quality & code metrics"])
+                    "Quality & code metrics", "Self-training"])
     with tabs[0]:
         section_overview(summary, agg, scope)
     with tabs[1]:
@@ -849,6 +895,8 @@ def main() -> None:
         section_solve_matrix(configs)
     with tabs[5]:
         section_quality(run, load_summary(db_key(), run_id))
+    with tabs[6]:
+        section_selftrain()
 
 
 main()

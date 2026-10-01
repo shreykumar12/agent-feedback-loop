@@ -41,7 +41,7 @@ class QualityScore(BaseModel):
 
 def score_quality(task: Task, final_code: str, model: str | None = None) -> dict | None:
     model = model or config.JUDGE_MODEL
-    if model.startswith("sim") or not config.LLM_API_KEY:
+    if model.startswith(("sim", "hf:")) or not config.LLM_API_KEY:
         return None
     try:
         from langchain_core.messages import HumanMessage, SystemMessage

@@ -54,12 +54,158 @@ def cmd_run(args) -> int:
             run_id = run_suite(
                 model=args.model, prompt_version=args.prompt_version, task_ids=args.tasks,
                 use_judge=args.judge, feedback_level=args.feedback_level, max_tries=args.max_tries,
-                seed=seed, workers=args.workers, notes=args.notes,
+                seed=seed, workers=args.workers, notes=args.notes, suite=args.suite,
+                candidates=args.candidates, verifier=args.verifier, sample_temperature=args.sample_temperature,
             )
             print(run_id)
-    except AgentError as exc:
+    except (AgentError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _verifier_datasets(args):
+    from agent_eval.ml import verifier as vf
+    from agent_eval.tasks import load_tasks
+
+    train_tasks = [t for s in args.train_suites for t in load_tasks(suite=s)]
+    eval_tasks = [t for s in args.eval_suites for t in load_tasks(suite=s)]
+    eval_ids = {t.task_id for t in eval_tasks}
+    overlap = {t.task_id for t in train_tasks} & eval_ids
+    if overlap:
+        raise ValueError(f"train and eval suites share {len(overlap)} tasks; the test numbers would be meaningless")
+    train = vf.examples_from_tasks(train_tasks)
+    test = vf.examples_from_tasks(eval_tasks)
+    if args.with_attempts:
+        from agent_eval import storage
+
+        storage.init_db()
+        attempts = vf.examples_from_db()
+        train += [e for e in attempts if e.task_id not in eval_ids]
+        test += [e for e in attempts if e.task_id in eval_ids]
+    train, val = vf.split_by_task(vf.dedupe(train), val_fraction=0.15, seed=args.seed)
+    return train, val, vf.dedupe(test)
+
+
+def cmd_train_verifier(args) -> int:
+    from agent_eval.ml import verifier as vf
+
+    try:
+        train, val, test = _verifier_datasets(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"train {len(train)} examples ({sum(e.label for e in train)} pass) on "
+          f"{len({e.task_id for e in train})} tasks | val {len(val)} | test {len(test)} on held-out suites "
+          f"{' + '.join(args.eval_suites)}")
+    model_cfg = vf.VerifierConfig(d_model=args.d_model, n_layers=args.layers, n_heads=args.heads, d_ff=args.d_model * 3,
+                                  canonical_names=args.canonical_names)
+    verifier, result = vf.train_verifier(train, val, model_cfg, vf.TrainConfig(
+        epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, seed=args.seed))
+    test_metrics = vf.evaluate(verifier, test)
+    print(f"\nbest epoch {result.best_epoch}")
+    print("val :", vf.summarize(result.val))
+    print("test:", vf.summarize(test_metrics))
+    path = verifier.save(args.out, {"val": result.val, "test": test_metrics, "history": result.history,
+                                    "train_suites": args.train_suites, "eval_suites": args.eval_suites})
+    print(f"saved {path}")
+    return 0
+
+
+def cmd_eval_verifier(args) -> int:
+    from agent_eval.ml import verifier as vf
+    from agent_eval.tasks import load_tasks
+
+    v = vf.load_verifier(args.path)
+    for suite in args.suites:
+        print(f"{suite:<6}", vf.summarize(vf.evaluate(v, vf.examples_from_tasks(load_tasks(suite=suite)))))
+    return 0
+
+
+def cmd_gen_train_tasks(args) -> int:
+    from agent_eval.training_tasks import write_training_suite
+
+    out = args.out or str(config.SUITES["train"])
+    exclude = []
+    for path in args.exclude or []:
+        exclude += json.loads(open(path, encoding="utf-8").read())
+    stats = write_training_suite(out, n=args.n, seed=args.seed, validate=not args.no_validate,
+                                 id_prefix=args.id_prefix, exclude=exclude)
+    print(f"wrote {stats['written']} tasks to {out} ({stats['dropped']} dropped by validation, "
+          f"{stats['duplicates_removed']} duplicates of excluded tasks removed) across {len(stats['families'])} families")
+    return 0
+
+
+def cmd_build_suites(args) -> int:
+    from agent_eval.suite_builder import build_suites
+
+    stats = build_suites(config.SUITES["train"], config.SUITES["heldout"], pool_size=args.pool,
+                         heldout_per_family=args.heldout_per_family, max_train=args.max_train,
+                         seed=args.seed, validate=not args.no_validate)
+    print(f"train {stats['train']} tasks -> {config.SUITES['train']}")
+    print(f"heldout {stats['heldout']} tasks -> {config.SUITES['heldout']}")
+    print(f"({stats['distinct']} distinct problems from a pool of {stats['pool']}, "
+          f"{stats['dropped']} dropped by validation, {stats['families']} families)")
+    if stats["families_without_heldout"]:
+        print("families too small for a held-out task: " + ", ".join(stats["families_without_heldout"]))
+    return 0
+
+
+def cmd_export_sft(args) -> int:
+    from agent_eval import storage
+    from agent_eval.ml import sft
+
+    run_ids = [rid for ref in args.runs for rid in storage.resolve_run_refs(ref)]
+    examples = sft.examples_from_runs(run_ids, tuple(args.kinds))
+    path = sft.write_jsonl(examples, args.out)
+    print(f"{len(examples)} examples {sft.counts(examples)} from {len(run_ids)} run(s) -> {path}")
+    return 0
+
+
+def cmd_selftrain(args) -> int:
+    from agent_eval.agent import AgentError
+    from agent_eval.ml import finetune, selftrain
+
+    lora = finetune.LoraTrainConfig(rank=args.lora_rank, alpha=args.lora_rank * 2, lr=args.lr, epochs=args.epochs,
+                                    grad_accum=args.grad_accum, max_len=args.max_len, max_steps=args.max_steps)
+    cfg = selftrain.SelfTrainConfig(
+        base_model=args.model, experiment=args.experiment, rounds=args.rounds, train_suite=args.train_suite,
+        eval_suites=tuple(args.eval_suites), train_tasks=args.train_tasks, eval_tasks=args.eval_tasks,
+        feedback_level=args.feedback_level, max_tries=args.max_tries, prompt_version=args.prompt_version,
+        warm_start=args.warm_start, seed=args.seed, lora=lora, kinds=tuple(args.kinds))
+    try:
+        rows = selftrain.self_train(cfg)
+    except (ValueError, AgentError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print("\n" + selftrain.format_curve(rows))
+    return 0
+
+
+def cmd_compare_experiments(args) -> int:
+    from agent_eval import regression
+    from agent_eval.ml import selftrain
+
+    results = selftrain.compare_experiments(args.treatment, args.control)
+    if not results:
+        print("the two experiments share no eval suites")
+        return 2
+    for suite, cmp in results.items():
+        print(f"## {suite}: {args.treatment} (candidate) vs {args.control} (baseline), final rounds")
+        print(regression.format_report(cmp))
+    return 0
+
+
+def cmd_curve(args) -> int:
+    from agent_eval.ml import selftrain
+
+    experiments = [args.experiment] if args.experiment else selftrain.list_experiments()
+    if not experiments:
+        print("no self-training experiments yet -- python main.py selftrain --model hf:<model> --experiment NAME")
+        return 0
+    for name in experiments:
+        print(f"experiment {name}")
+        print(selftrain.format_curve(selftrain.learning_curve(name)) + "\n")
     return 0
 
 
@@ -71,11 +217,11 @@ def cmd_runs(args) -> int:
     if not runs:
         print("no runs yet -- try: python main.py run --model sim-base")
         return 0
-    header = f"{'run_id':<10}{'timestamp':<27}{'model':<20}{'prompt':<8}{'feedback':<10}{'tries':>6}{'seed':>6}{'tasks':>7}{'pass':>8}  status"
+    header = f"{'run_id':<10}{'timestamp':<27}{'model':<20}{'suite':<7}{'prompt':<8}{'feedback':<10}{'tries':>6}{'seed':>6}{'tasks':>7}{'pass':>8}  status"
     print(header)
     print("-" * len(header))
     for r in runs:
-        print(f"{r['run_id'][:8]:<10}{r['timestamp']:<27}{r['model'][:19]:<20}{r['prompt_version']:<8}"
+        print(f"{r['run_id'][:8]:<10}{r['timestamp']:<27}{r['model'][:19]:<20}{r.get('suite', 'easy'):<7}{r['prompt_version']:<8}"
               f"{r['feedback_level']:<10}{r['max_tries']:>6}{r['seed']:>6}{r['num_tasks']:>7}"
               f"{_pct(r['pass_rate']):>8}  {r['status']}")
     return 0
@@ -83,7 +229,7 @@ def cmd_runs(args) -> int:
 
 def _print_summary(s: dict) -> None:
     lo, hi = s["pass_rate_ci95"]
-    print(f"run {s['run_id'][:8]}  {s['model']} / prompt {s['prompt_version']} / feedback={s['feedback_level']}"
+    print(f"run {s['run_id'][:8]}  {s['model']} / suite {s.get('suite', 'easy')} / prompt {s['prompt_version']} / feedback={s['feedback_level']}"
           f" / max_tries={s['max_tries']} / seed={s['seed']}")
     print(f"  final pass rate     {_pct(s['pass_rate'])}  ({s['num_passed']}/{s['num_tasks']}, 95% CI {lo:.0%}-{hi:.0%})")
     print(f"  pass@1              {_pct(s['pass_at_1'])}")
@@ -103,6 +249,9 @@ def _print_summary(s: dict) -> None:
     print("  all failed attempts " + (", ".join(f"{k}={v}" for k, v in s["error_counts"].items()) or "-"))
     print("  by difficulty       " + "  ".join(
         f"{d}: {v['pass_at_1']:.0%}->{v['pass_rate']:.0%} (n={v['n']})" for d, v in s["by_difficulty"].items()))
+    if len(s["by_category"]) > 1:
+        print("  by category         " + "  ".join(
+            f"{c}: {v['pass_at_1']:.0%}->{v['pass_rate']:.0%} (n={v['n']})" for c, v in s["by_category"].items()))
     print(f"  tokens              in {s['tokens_in']:,} / out {s['tokens_out']:,}"
           + (f" / {s['tokens_per_solved']:,.0f} per solved task" if s["tokens_per_solved"] else ""))
     print(f"  est. cost           ${s['est_cost_usd']:.4f}")
@@ -175,7 +324,7 @@ def cmd_ablation(args) -> int:
                 for seed in range(args.seeds):
                     rid = run_suite(model=model, prompt_version=args.prompt_version, task_ids=args.tasks,
                                     feedback_level=level, max_tries=args.max_tries, seed=seed,
-                                    workers=args.workers, notes=tag, quiet=True)
+                                    workers=args.workers, notes=tag, quiet=True, suite=args.suite)
                     summaries.append(metrics.load_summary(rid))
                     print(f"  {model} fb={level} seed={seed}: {summaries[-1]['pass_rate']:.1%}", file=sys.stderr)
                 rows.append((model, level, metrics.aggregate_summaries(summaries)))
@@ -211,7 +360,7 @@ def cmd_report(args) -> int:
 def cmd_validate(args) -> int:
     from agent_eval.tasks import load_tasks, suite_hash, validate_suite
 
-    tasks = load_tasks(task_ids=args.tasks)
+    tasks = load_tasks(task_ids=args.tasks, suite=args.suite)
     reports = validate_suite(tasks)
     print(f"{'task_id':<30}{'diff':<8}{'tests':>6}{'canonical':>11}{'mutants killed':>16}")
     for t, r in zip(tasks, reports, strict=False):
@@ -242,7 +391,13 @@ def cmd_delete_run(args) -> int:
     return 0
 
 
+def _add_suite_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--suite", default=None,
+                   help=f"task suite: {' / '.join(config.SUITES)} or a path to a tasks JSON (default: {config.DEFAULT_SUITE})")
+
+
 def _add_loop_args(p: argparse.ArgumentParser) -> None:
+    _add_suite_arg(p)
     p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
     p.add_argument("--max-tries", type=int, default=config.MAX_TRIES)
     p.add_argument("--tasks", nargs="+", metavar="TASK_ID", help="only run these tasks")
@@ -266,8 +421,98 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--judge", action="store_true", help="score passing code with the LLM judge")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--seeds", type=int, default=1, help="repeat with N consecutive seeds")
+    p.add_argument("--candidates", type=int, default=1,
+                   help="best-of-N: sample N programs per attempt, the --verifier picks which one is tested")
+    p.add_argument("--verifier", default=None, help="path to a trained verifier (python main.py train-verifier)")
+    p.add_argument("--sample-temperature", type=float, default=0.8,
+                   help="temperature for candidates 2..N (candidate 1 uses the normal setting)")
     _add_loop_args(p)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("train-verifier", help="train the from-scratch PyTorch pass/fail verifier")
+    p.add_argument("--train-suites", nargs="+", default=["train"],
+                   help="suites whose reference solutions + mutants are training data")
+    p.add_argument("--eval-suites", nargs="+", default=["easy", "hard"], help="held-out test suites")
+    p.add_argument("--with-attempts", action="store_true",
+                   help="also learn from every stored attempt (labeled by its sandbox verdict)")
+    p.add_argument("--epochs", type=int, default=25)
+    p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--lr", type=float, default=1e-3)
+    p.add_argument("--d-model", type=int, default=128)
+    p.add_argument("--layers", type=int, default=3)
+    p.add_argument("--heads", type=int, default=4)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no-canonical-names", dest="canonical_names", action="store_false",
+                   help="keep original identifiers (default renames them to v0, v1, ... so the model "
+                        "can't key on task-specific names)")
+    p.add_argument("--out", default="models/verifier.pt")
+    p.set_defaults(func=cmd_train_verifier)
+
+    p = sub.add_parser("gen-train-tasks", help="(re)build the procedurally generated training suite")
+    p.add_argument("--n", type=int, default=400)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out", default=None, help="default: tasks/tasks_train.json")
+    p.add_argument("--no-validate", action="store_true", help="skip running references + mutants in the sandbox")
+    p.add_argument("--id-prefix", default="gen", help="task-id prefix; use a different one for a held-out set")
+    p.add_argument("--exclude", nargs="+", metavar="JSON",
+                   help="tasks files whose problems must not reappear (e.g. tasks/tasks_train.json)")
+    p.set_defaults(func=cmd_gen_train_tasks)
+
+    p = sub.add_parser("build-suites", help="build the train + held-out suites from one de-duplicated pool")
+    p.add_argument("--pool", type=int, default=3000, help="candidate tasks to generate before de-duplication")
+    p.add_argument("--heldout-per-family", type=int, default=3)
+    p.add_argument("--max-train", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no-validate", action="store_true")
+    p.set_defaults(func=cmd_build_suites)
+
+    p = sub.add_parser("export-sft", help="turn stored attempts into fine-tuning examples (JSONL)")
+    p.add_argument("runs", nargs="+", help="run ids, prefixes, latest, comma lists or @model/... selectors")
+    p.add_argument("--kinds", nargs="+", default=["direct", "repair", "distill"],
+                   choices=["direct", "repair", "distill"])
+    p.add_argument("--out", default="runs_ml/sft.jsonl")
+    p.set_defaults(func=cmd_export_sft)
+
+    p = sub.add_parser("selftrain", help="rounds of collect -> LoRA fine-tune -> eval on a local model")
+    p.add_argument("--model", required=True, help="local base model, e.g. hf:Qwen/Qwen2.5-Coder-0.5B-Instruct")
+    p.add_argument("--experiment", required=True, help="name for this run of rounds")
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--train-suite", default="train")
+    p.add_argument("--eval-suites", nargs="+", default=["heldout", "easy"],
+                   help="held-out suites to measure each round on (hard is ~0%% for small models)")
+    p.add_argument("--train-tasks", type=int, default=200, help="training tasks collected on per round")
+    p.add_argument("--eval-tasks", type=int, default=None, help="limit eval tasks per suite (smoke tests)")
+    p.add_argument("--feedback-level", default="full", choices=FEEDBACK_LEVELS)
+    p.add_argument("--max-tries", type=int, default=config.MAX_TRIES)
+    p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
+    p.add_argument("--warm-start", action="store_true",
+                   help="also train on the training tasks' reference solutions (supervised bootstrap)")
+    p.add_argument("--kinds", nargs="+", default=["direct", "repair", "distill"],
+                   choices=["direct", "repair", "distill"],
+                   help="which verified examples to train on; drop 'repair' for a no-feedback-learning control")
+    p.add_argument("--lora-rank", type=int, default=16)
+    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--epochs", type=int, default=2)
+    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--max-len", type=int, default=1024)
+    p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_selftrain)
+
+    p = sub.add_parser("compare-experiments",
+                       help="paired test of two self-training experiments' final models (e.g. with vs without feedback)")
+    p.add_argument("treatment")
+    p.add_argument("control")
+    p.set_defaults(func=cmd_compare_experiments)
+
+    p = sub.add_parser("curve", help="learning curve of a self-training experiment")
+    p.add_argument("experiment", nargs="?")
+    p.set_defaults(func=cmd_curve)
+
+    p = sub.add_parser("eval-verifier", help="score a trained verifier on suites' references + mutants")
+    p.add_argument("path")
+    p.add_argument("--suites", nargs="+", default=["easy", "hard"])
+    p.set_defaults(func=cmd_eval_verifier)
 
     p = sub.add_parser("runs", help="list stored runs")
     p.add_argument("--limit", type=int, default=30)
@@ -309,6 +554,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("validate-tasks", help="check canonical solutions + mutation score")
     p.add_argument("--tasks", nargs="+", metavar="TASK_ID")
+    _add_suite_arg(p)
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("delete-run", help="remove a run and its attempts")

@@ -52,5 +52,19 @@ SANDBOX_MEMORY_LIMIT_MB = int(os.getenv("SANDBOX_MEMORY_LIMIT_MB", "512"))
 
 # --- Paths ---
 TASKS_PATH = Path(os.getenv("AGENT_EVAL_TASKS", PROJECT_ROOT / "tasks" / "tasks.json"))
+# Named task suites: "easy" is the original function-from-docstring set, "hard"
+# mixes bug-fixing, stateful classes, long specs and performance limits.
+SUITES = {
+    "easy": PROJECT_ROOT / "tasks" / "tasks.json",
+    "hard": PROJECT_ROOT / "tasks" / "tasks_hard.json",
+    # Procedurally generated TRAINING tasks for self-training and the verifier.
+    # Never used for evaluation; `python main.py gen-train-tasks` (re)builds it.
+    "train": PROJECT_ROOT / "tasks" / "tasks_train.json",
+    # Held-out generated tasks: the same problem families as "train" but different
+    # instances (another seed, de-duplicated against train). The in-distribution
+    # eval set for self-training, where a small model has room to move.
+    "heldout": PROJECT_ROOT / "tasks" / "tasks_heldout.json",
+}
+DEFAULT_SUITE = os.getenv("AGENT_EVAL_SUITE", "easy")
 DB_PATH = Path(os.getenv("AGENT_EVAL_DB", PROJECT_ROOT / "data" / "agent_eval.db"))
 REPORTS_DIR = PROJECT_ROOT / "reports"

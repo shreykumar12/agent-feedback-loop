@@ -93,3 +93,20 @@ def test_seeded_db_interactions(seeded_db):
 def test_real_db_renders(monkeypatch):
     _point_at(monkeypatch, Path(config.PROJECT_ROOT) / "data" / "agent_eval.db")
     _assert_ok(_run_app())
+
+
+def test_self_training_tab_renders_a_learning_curve(tmp_path, monkeypatch):
+    from agent_eval.ml import selftrain
+
+    _point_at(monkeypatch, tmp_path / "curve.db")
+    storage.init_db()
+    store_run("r0", {"e1": [False, True], "h1": [False, False, False]}, model="hf:tiny")
+    store_run("r1", {"e1": [True], "h1": [False, True]}, model="hf:tiny+adapters/x/round_1", seed=1)
+    selftrain.init_tables()
+    selftrain._record("exp", 0, "hf:tiny", None, [], {}, None, {"easy": "r0"})
+    selftrain._record("exp", 1, "hf:tiny+adapters/x/round_1", "adapters/x/round_1",
+                      [{"kind": "repair", "messages": [], "target": ""}], {"final_loss": 0.5}, None, {"easy": "r1"})
+    at = _run_app()
+    _assert_ok(at)
+    assert any(h.value == "Self-training learning curve" for h in at.subheader)
+    assert any("pass@1 (round 1)" in m.label for m in at.metric)

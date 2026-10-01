@@ -101,3 +101,75 @@ Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
   regression tab defaults to best vs worst configuration, feedback-level colors
   aligned with the HTML report (full = slot 1).
 - Test suite: 114 tests, ~40 s locally (dashboard AppTests dominate).
+
+## Hard suite (branch claude/11-hard-suite)
+- Why: the easy suite is saturated for frontier models (the user saw no failures with
+  gemini-3.8-flash), so the loop had nothing to measure.
+- tasks/tasks_hard.json: 20 tasks, 5 each of bugfix / stateful / spec / performance,
+  16 hard + 4 medium, 269 tests, 102 mutants, mutation score 100%. Written by two
+  subagents, verified by me (validate-tasks + a performance timing check).
+- Performance tasks: per_test_timeout 1.5 s; reference solutions use 14-20% of it
+  on this machine; each has >= 1 correct-but-slow mutant that times out
+  (worst mutant 4.6 s total, under the 10 s sandbox cap).
+- Easy-suite v1 prompts render byte-for-byte as before (tested), so existing
+  results stay comparable. Old DBs migrate in place (runs.suite, tasks.category).
+- Open question for the user: two semver tasks (fix_semver_range_matcher in
+  bugfix, semver_range_satisfies in spec). Kept both for now.
+- Test suite: 147 tests, ~100 s locally (the hard suite's validity tests add ~60 s).
+
+## PyTorch / self-improvement (branch claude/12-pytorch, stacked on 11)
+- Environment: huggingface.co and download.pytorch.org are blocked (403); PyPI works.
+  torch 2.14.1 came from PyPI (CUDA build, runs on CPU). Real models (Qwen) can only
+  be downloaded on the user's Mac; here everything is tested with ml/tiny.py
+  (a 2-layer random Llama + BPE tokenizer built locally).
+- User hardware: says "M3 Pro 8GB" (M3 Pro ships with >= 18GB; maybe a base M3).
+  Plan targets 0.5B models (Qwen2.5-Coder-0.5B-Instruct) on MPS, fp32 + grad ckpt.
+- LangChain kept: local models go through ChatHuggingFace(HuggingFacePipeline);
+  LangGraph loop unchanged. usage_metadata is empty for local models -> count with tokenizer.
+- transformers 5: apply_chat_template(tokenize=True) returns a BatchEncoding, not a list
+  (helper ml/device.chat_prompt_ids normalizes).
+- Verifier debugging (important finding):
+  1. First run: AUC ~0.5, could not even overfit 518 examples.
+  2. Root cause: reference solutions repeat the task docstring, so the differing lines
+     of pass/fail pairs fell past the 1024-byte window: 22% (train) / 49% (easy) / 73%
+     (hard) of pairs were byte-identical inputs with opposite labels.
+  3. Fixes: AST normalization (strip docstrings/comments), 2048-byte window with
+     4-byte patch embedding; pairwise ranking loss over same-task pairs + small BCE;
+     max pooling; more steps (lr 1e-3, 25 epochs). Overfit check then hit AUC ~0.9.
+  4. Also fixed a metric bug: best-of-N selection broke score ties using the label.
+- Hard suite still has 28% indistinguishable pairs at 2048 bytes (long programs).
+- Verifier results (train: 400 generated tasks; val: 60 unseen generated; test: easy+hard):
+  plain bytes val AUC 0.734 / test 0.452; canonical names val 0.837 / test 0.504.
+  In-loop (sim-weak, max_tries 1, best-of-5, seeds 0-2, paired McNemar):
+    plain:  held-out generated 43.3 -> 53.3 (+10, p=0.033); easy 38.3 -> 18.3 (-20, p=0.002)
+    canon:  held-out generated 43.3 -> 66.7 (+23.3, p=2e-6); easy -6.7 (p=0.48); hard -3.3 (p=0.79)
+  => canonical_names is the default. Code length is NOT the shortcut (AUC(length) ~0.50).
+  Next step to close the gap: train on real LLM attempts (--with-attempts).
+
+## CURRENT STATE / NEXT STEPS (written before compacting, per the strategic-compact skill)
+Goal (user, restated): prove the feedback loop TEACHES a small local model. Gemini is too
+strong to show learning; a ~0.5B local model fails a lot, so self-training on its own
+sandbox-verified successes + repairs should raise its pass rate on UNSEEN tasks.
+
+Branches (all commits authored as shreykumar <156003188+shreykumar12@users.noreply.github.com>,
+no Claude trailers -- user asked commits show only them): main has everything up to the
+rate-limit fix. claude/11-hard-suite (hard suite) -> claude/12-pytorch (stacked on 11).
+User merges; never merge or open PRs.
+
+Work in progress on claude/12-pytorch (UNCOMMITTED at time of writing):
+- training_tasks.py: id_prefix + exclude (solution_fingerprint dedup) for a held-out suite
+- config.SUITES["heldout"] = tasks/tasks_heldout.json; main.py gen-train-tasks --id-prefix/--exclude
+- tasks/tasks_heldout.json generated with --n 152 --seed 1 --id-prefix heldout --exclude
+  tasks/tasks_train.json -> only 45 tasks survived. NOT validated yet. Investigate: dedup
+  too aggressive (low-variation families repeat across seeds?) -- maybe generate more (n 600)
+  or relax to exact-prompt dedup.
+
+Planned next (the "proof" additions):
+1. held-out generated eval suite (above) -- small models score ~0% on hard, need room to move
+2. `curve`: paired McNemar of each round vs round 0 per suite
+3. control experiment: selftrain --kinds with vs without "repair" examples, same base/seed,
+   to show FEEDBACK (not just more fine-tuning) drives the gain; expose --kinds on selftrain
+4. README protocol + realistic time estimates for an 8 GB Mac (cut LOCAL_MAX_NEW_TOKENS,
+   train-tasks ~100 per round)
+Open questions to user: actual RAM (M3 Pro ships >= 18GB); keep both semver tasks in hard?
+Skill installed: .claude/skills/strategic-compact (vendored, MIT, hook not included).

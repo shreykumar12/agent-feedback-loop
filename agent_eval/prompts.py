@@ -29,10 +29,10 @@ _V1 = PromptSet(
         "implementation (imports, helpers, and the function). No explanations."
     ),
     first_attempt=(
-        "Implement the following function:\n\n```python\n{task_prompt}\n```"
+        "{instruction}\n\n```python\n{task_prompt}\n```"
     ),
     retry=(
-        "Implement the following function:\n\n```python\n{task_prompt}\n```\n\n"
+        "{instruction}\n\n```python\n{task_prompt}\n```\n\n"
         "Your previous attempt:\n\n```python\n{previous_code}\n```\n\n"
         "It was run against hidden tests. Test feedback:\n\n{feedback}\n\n"
         "Return the corrected complete implementation in a single ```python code block."
@@ -78,12 +78,24 @@ def get_prompts(version: str) -> PromptSet:
         raise ValueError(f"unknown prompt version {version!r}; available: {sorted(PROMPTS)}") from None
 
 
+# v1's lead-in line, per task category. "function" keeps the original wording, so
+# easy-suite prompts render byte-for-byte as before.
+INSTRUCTIONS = {
+    "function": "Implement the following function:",
+    "spec": "Implement the following function:",
+    "performance": "Implement the following function (input sizes and time limits are stated in the docstring):",
+    "stateful": "Implement the following class:",
+    "bugfix": "The following code has one or more bugs. Return the complete, fixed code:",
+}
+
+
 def render(version: str, task_prompt: str, previous_code: str | None = None,
-           feedback: str | None = None) -> tuple[str, str]:
+           feedback: str | None = None, category: str = "function") -> tuple[str, str]:
     """Return (system, user) messages for a first attempt or a retry."""
     prompts = get_prompts(version)
+    fields = {"task_prompt": task_prompt, "instruction": INSTRUCTIONS.get(category, INSTRUCTIONS["function"])}
     if previous_code is None:
-        return prompts.system, prompts.first_attempt.format(task_prompt=task_prompt)
+        return prompts.system, prompts.first_attempt.format(**fields)
     return prompts.system, prompts.retry.format(
-        task_prompt=task_prompt, previous_code=previous_code, feedback=feedback or "(no feedback)"
+        **fields, previous_code=previous_code, feedback=feedback or "(no feedback)"
     )

@@ -12,11 +12,11 @@ An LLM writes a Python function, a sandbox runs hidden tests against it, and the
 
 ![Evaluation report](docs/img/report-overview.png)
 
-## Self-correcting, not self-improving
+## Self-correcting, and optionally self-improving
 
-This agent is **self-correcting**: within one task, it uses test feedback to repair its own answer over a few bounded tries. It is **not self-improving**: nothing it learns on one task carries over to the next. There is no memory, fine-tuning, or prompt rewriting between tasks or runs.
+Within one task the agent is **self-correcting**: it uses test feedback to repair its own answer over a few bounded tries. A single run is never **self-improving**: nothing learned on one task carries over to the next. There is no memory or prompt rewriting between tasks, so every run stays a clean, comparable measurement.
 
-Improvement across runs happens *outside* the agent. A human changes the model, prompt version or feedback level. The regression detector then says, with statistics, whether that change helped or hurt. That separation keeps every run a clean, comparable measurement.
+Self-improvement is a separate, explicit step on top of that, using PyTorch (see [Self-improvement with PyTorch](#self-improvement-with-pytorch)). A local model runs the loop on *training* tasks, and its sandbox-verified successes and repairs become fine-tuning data for a LoRA adapter. The next round's model is then measured on the held-out eval suites. Each round is a new, versioned model, and the same regression detector judges whether it actually got better.
 
 ## Architecture
 
@@ -53,6 +53,10 @@ flowchart LR
 | `agent_eval/judge.py` | Optional LLM judge for readability and approach (never correctness) |
 | `agent_eval/report.py` | Self-contained HTML report |
 | `dashboard/app.py` | Interactive Streamlit dashboard |
+| `agent_eval/training_tasks.py` | Procedural training-task generator (38 families), kept separate from the eval suites |
+| `agent_eval/ml/local_model.py` | Local Hugging Face/PyTorch models served through LangChain (`hf:<model>[+<adapter>]`) |
+| `agent_eval/ml/verifier.py` | A pass/fail verifier written from scratch in PyTorch, used to rerank best-of-N candidates |
+| `agent_eval/ml/sft.py`, `finetune.py`, `selftrain.py` | Verified trajectories → LoRA fine-tuning → self-training rounds with a learning curve |
 
 ## Design decisions
 
@@ -78,6 +82,135 @@ Each test gets its own SIGALRM timeout, raised as a `BaseException` so `except E
 
 **Offline simulator.** No API key? The `sim-strong`, `sim-base` and `sim-weak` models "write" either a task's reference solution or one of its mutants. A failure lowers the chance of fixing the task on a blind retry, and feedback can only raise it. The simulator reads the feedback text: with full feedback it turns the shown assertions into probe tests and runs its candidate fixes against them in the sandbox. Its results are a demonstration of the measurement system, **not claims about any real LLM**.
 
+## Task suites
+
+The easy suite is useful as a baseline, but classic "write a function from a docstring" problems are saturated: frontier models pass nearly all of them on the first try, which leaves the retry loop nothing to measure. The hard suite targets the ways strong models actually fail.
+
+| Suite | Tasks | Hidden tests | Mutants | What it contains |
+|---|---|---|---|---|
+| `easy` (`tasks/tasks.json`) | 20 (6 easy, 8 medium, 6 hard) | 164 | 88 | Function-from-docstring problems with a few trap conventions |
+| `hard` (`tasks/tasks_hard.json`) | 20 (16 hard, 4 medium) | 269 | 102 | Five tasks in each of four categories, below |
+
+Hard-suite categories:
+- **Bug-fixing:** 40–120 lines of realistic, buggy production-style code with a symptom-only bug report. Examples: refund cent allocation, keyset pagination, semver ranges, SLA business-hour deadlines, config deep merge. The original buggy code and plausible partial fixes are among the mutants.
+- **Stateful classes:** a token-bucket rate limiter, a limit order book, a nested-transaction key-value store, a coalescing undo buffer, a card-hold ledger. Tests drive long call sequences with an injected clock.
+- **Long specs:** a semver range matcher, a template engine, RFC 6902 JSON Patch, cron next-fire time, a TOML-subset parser. They have 15+ interacting rules, each one tested.
+- **Performance:** inputs of 10⁵–10⁶ under a 1.5 s per-test limit. A correct but quadratic solution times out, so the agent has to read the timeout feedback and change algorithms.
+
+Every task in both suites has a reference solution and mutants. `pytest` and CI require every reference to pass and every mutant to be caught, so both suites have a 100% mutation score. Runs record their suite, and every comparison, report and dashboard view keys on it, so easy and hard results never mix. Each run's summary also breaks pass@1 and the final pass rate down by category.
+
+## Self-improvement with PyTorch
+
+The loop's own ground truth (sandbox verdicts on thousands of attempts) is training data. Three PyTorch components use it, alongside the LangChain/LangGraph stack, not instead of it:
+
+| Layer | Tool | Role |
+|---|---|---|
+| Orchestration | LangGraph | The bounded generate → test → feedback loop (unchanged) |
+| Model interface | LangChain | One `invoke()` over Gemini (`ChatOpenAI`) and local PyTorch models (`ChatHuggingFace`) |
+| Models and training | PyTorch + Hugging Face + PEFT | Local inference, LoRA self-training, the from-scratch verifier |
+| Correctness | Sandbox + hidden tests | The ground truth every label and metric comes from |
+
+**1. Local models (`--model hf:<repo-or-path>[+<adapter>]`).** Any Hugging Face causal LM, e.g. `hf:Qwen/Qwen2.5-Coder-0.5B-Instruct`, loads once per process on CUDA, Apple Silicon (MPS) or CPU. It runs through LangChain's `ChatHuggingFace`, so prompts, extraction, the sandbox and every metric work unchanged. A `+<adapter-dir>` suffix loads a LoRA adapter from self-training.
+
+**2. A learned verifier, written from scratch.** `agent_eval/ml/verifier.py` predicts whether code will pass the hidden tests *without running it*. It uses no pretrained weights:
+- a byte tokenizer
+- a byte-patch embedding that groups 4 bytes into one token, making attention about 16× cheaper
+- hand-written multi-head self-attention blocks
+- [CLS] + mean + max pooling into a single logit
+
+Training uses a pairwise ranking loss (a task's passing program should score above its failing ones), plus a little class-balanced BCE to keep scores calibrated. Code is normalized through the AST (docstrings and comments stripped) so the byte budget goes to logic. Without that, 22–73% of pass/fail pairs truncated to *identical* inputs with opposite labels, a data bug found while debugging a flat loss curve. Splits are by task, and the test set is the eval suites, which it never sees in training. In the loop, `--candidates N --verifier PATH` samples N programs per attempt and sends only the verifier's top pick to the sandbox. Candidate 1 is always the normal single-sample output, so best-of-N vs. single-sample is a paired comparison.
+
+**3. Self-training (expert iteration).** `python main.py selftrain` runs rounds of:
+1. evaluate on the held-out suites
+2. run the loop on training tasks
+3. turn verified successes into fine-tuning data
+4. train a fresh LoRA adapter
+5. evaluate again
+
+The fine-tuning data has three kinds of example: first-try passes, **repairs** (failing code + feedback → the fix that passed, which teaches the model to use feedback), and **distilled retries** (the first prompt → code that only passed later). Only sandbox-verified code is ever a training target. The training suite (`tasks/tasks_train.json`) is 400 procedurally generated tasks from 38 families, validated like the eval suites (1,340 mutants, all caught), with no overlap with them. `selftrain` refuses to run if the training and eval suites share a task. Each round is stored, and `python main.py curve`, the report and the dashboard's Self-training tab show the learning curve.
+
+### Verifier results (measured)
+
+The verifier was trained on the 400 generated training tasks (1,477 labeled programs from 340 tasks). It was validated on 60 *unseen* generated tasks and tested on the 40 hand-written benchmark tasks, none of which it saw in training.
+
+| | Plain bytes | Identifiers canonicalized (default) |
+|---|---|---|
+| Unseen generated tasks: ROC-AUC | 0.73 | **0.84** |
+| Unseen generated tasks: calibration error (ECE) | 0.21 | **0.13** |
+| Benchmark suites: ROC-AUC | 0.45 (reversed) | 0.50 (chance) |
+
+**In the loop** (sim-weak agent, one try, best-of-5 vs. single sample, 3 seeds, paired by seed and task):
+
+| Tasks | Single sample | Best-of-5 + verifier | Paired McNemar |
+|---|---|---|---|
+| 60 unseen generated tasks | 43.3% | **66.7% (+23.3 pp)** | 60 gained / 18 lost, p = 2×10⁻⁶ |
+| Easy benchmark suite | 38.3% | 31.7% (−6.7 pp) | p = 0.48 (n.s.) |
+| Hard benchmark suite | 20.0% | 16.7% (−3.3 pp) | p = 0.79 (n.s.) |
+
+What this shows:
+- **A from-scratch verifier generalizes to unseen tasks from its training distribution,** and reranking with it raises pass@1 by 23 points.
+- **It doesn't transfer to differently-written code.** Before identifier canonicalization it actively *hurt* the benchmark suites (−20 pp, p = 0.002): it had learned a vocabulary shortcut that holds in generated code and reverses in human-written code. Canonicalization removed the harm, but not the gap.
+- **Validate a learned reranker on the distribution you'll use it on.** The project's own paired regression test is what caught the harmful version. Training on real model attempts (`--with-attempts`) is the natural next step to close the gap.
+
+(The simulated agent's candidates are the tasks' reference solutions and mutants, so these numbers measure the verifier's ranking quality in the real loop. They are not claims about an LLM's raw ability.)
+
+### Proving the loop teaches a small model
+
+Frontier models already pass most of these tasks, so they can't show learning. A small local model can: it fails often, has room to improve, and is cheap to fine-tune. The claim to test is: **"self-training on its own feedback-driven successes makes it better on problems it has never seen, and the feedback is what does it."**
+
+1. **Build the data.**
+   ```bash
+   python main.py build-suites --pool 3000 --heldout-per-family 3
+   ```
+   This writes `tasks/tasks_train.json` and `tasks/tasks_heldout.json` from one pool with one task per distinct problem. Training has no repeats, and no held-out problem appears in training.
+
+2. **Treatment run:** self-train with full feedback.
+   ```bash
+   python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment fb-full \
+       --rounds 3 --train-tasks 100 --feedback-level full
+   ```
+
+3. **Control run:** identical, but the loop's retries get no information.
+   ```bash
+   python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment fb-none \
+       --rounds 3 --train-tasks 100 --feedback-level none
+   ```
+   An alternative control keeps the feedback but drops the repair examples from training: `--kinds direct distill`.
+
+4. **Read the result.**
+   ```bash
+   python main.py curve fb-full        # pass@1 per round, each round tested against round 0
+   python main.py curve fb-none
+   python main.py compare-experiments fb-full fb-none   # final models, paired task by task
+   ```
+
+The loop has been shown to teach the model if `fb-full` improves held-out pass@1 over round 0 with a small McNemar p-value **and** beats `fb-none` in `compare-experiments`. Round 0 runs the same base model in both experiments, so the two curves share a starting point.
+
+Practical notes for an 8 GB Mac:
+- Run a tiny version first to measure speed: `--rounds 1 --train-tasks 20 --eval-tasks 20`. Then size the real run from how long that took.
+- Shorter generations speed everything up: `LOCAL_MAX_NEW_TOKENS=384` is enough for these tasks.
+- Close other apps during training. Generation and LoRA training share the 8 GB of unified memory.
+- If round 0 solves almost nothing on the training tasks, add `--warm-start`. It supervises round 1 on the training tasks' reference solutions to bootstrap. That's supervised data, not self-generated, so report it.
+
+**On an 8 GB Apple Silicon Mac:** a 0.5B model (e.g. Qwen2.5-Coder-0.5B-Instruct) fits for both generation and LoRA training, in fp32 with gradient checkpointing. 1.5B models are better trained on a CUDA GPU (e.g. Colab). The verifier trains in minutes on CPU and faster on MPS.
+
+```bash
+pip install -r requirements.txt -r requirements-ml.txt
+
+# Learned verifier: train on generated tasks, test on the held-out eval suites
+python main.py train-verifier --train-suites train --eval-suites easy hard --out models/verifier.pt
+python main.py run --model sim-weak --candidates 5 --verifier models/verifier.pt --seeds 5
+
+# Local model through LangChain, then self-training rounds
+python main.py run --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --tasks caesar_shift clamp_all
+python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment qwen05-r3 \
+    --rounds 3 --train-tasks 200 --warm-start
+python main.py curve qwen05-r3
+
+# Regenerate the training suite (deterministic)
+python main.py gen-train-tasks --n 400 --seed 0
+```
+
 ## Setup
 
 Requires Python ≥ 3.12, because the pinned dependencies need it.
@@ -100,6 +233,12 @@ python main.py attempts latest rank_players  # attempts, feedback and code for o
 # Real model (Gemini through its OpenAI-compatible endpoint)
 python main.py run --model gemini-3.8-flash --prompt-version v1 --feedback-level full
 python main.py run --model gemini-3.8-flash --prompt-version v2 --seeds 3 --judge
+python main.py run --model gemini-3.8-flash --rpm 5          # pace a rate-limited (free-tier) key
+
+# The hard suite (bug-fixing, stateful classes, long specs, performance limits)
+python main.py run --model gemini-3.8-flash --suite hard
+python main.py show latest                                   # includes the by-category breakdown
+python main.py compare @sim-strong/full/v1/hard @sim-weak/full/v1/hard   # compare within one suite
 
 # Feedback-level ablation: models x levels x seeds
 python main.py ablation --models sim-strong sim-base sim-weak --seeds 5
@@ -115,7 +254,8 @@ streamlit run dashboard/app.py
 
 # Tests and the suite's own validity check
 pytest
-python main.py validate-tasks
+python main.py validate-tasks --suite easy
+python main.py validate-tasks --suite hard
 ```
 
 ![Streamlit dashboard](docs/img/dashboard-overview.png)
@@ -184,13 +324,15 @@ VERDICT: REGRESSION
 
 ## Testing
 
-`pytest` runs 114 tests in about 40 s, with no API key, so CI runs them on every push:
+`pytest` runs 175 tests in about 3.5 minutes, with no API key and no model download, so CI runs them on every push. The 28 ML tests skip automatically if PyTorch isn't installed.
+- **ML:** a tiny locally built Llama runs through LangChain and the loop; SFT export only targets sandbox-verified code; LoRA lowers the loss and its adapter loads back; the verifier learns and round-trips; AUC and selection math (ties never broken by label); best-of-N is paired with single-sample and beats it with an oracle verifier; self-training rounds record a curve and refuse train/eval overlap; the training generator is deterministic, varied, valid, and disjoint from the eval suites.
 - **Sandbox:** timeouts that `except Exception` can't swallow, the global kill backstop, memory limit, secret stripping, isolation between runs, `sys.exit`.
 - **Feedback:** content at each level, truncation, and the hidden-test policy.
 - **Graph:** a scripted fake agent covers first-try pass, pass after retries, the max-tries stop, and that retry prompts receive the previous code and feedback.
 - **Storage:** round-trips.
 - **Metrics and regression:** hand-built runs with known answers, plus the McNemar, permutation and bootstrap math.
-- **Task suite validity:** reference solutions pass, mutants are caught.
+- **Task suite validity:** in both suites, every reference solution passes and every mutant is caught; performance tasks must declare a time limit; task ids are unique across suites.
+- **Suites:** easy-suite prompts render exactly as before, old databases migrate in place, and per-task time limits apply.
 - **Simulator:** more information never lowers the pass rate.
 - **Report and dashboard:** smoke tests.
 
@@ -198,7 +340,10 @@ VERDICT: REGRESSION
 
 - **The subprocess sandbox is not strong isolation.** rlimits and a stripped environment stop accidents (infinite loops, memory blowups, leaked keys), not an adversary. The code can still read the filesystem and open network sockets. `RLIMIT_NPROC` is not set because it is per-user. For untrusted models, run each attempt in Docker, gVisor or Firecracker.
 - **A small suite means noisy metrics.** With 20 tasks, one flipped task moves the pass rate by 5 pp and the 95% interval on a single run is about ±20 pp (13/20 → 43–82%). Even at temperature 0, provider-side nondeterminism means two identical runs can differ. Repeat runs, and prefer the paired and group tests over raw deltas.
-- **Benchmark contamination.** The tasks were written for this project rather than copied from HumanEval or MBPP, but they are HumanEval-*style* problems, and close variants likely exist in training data. Pass@1 on classic problems overstates ability on novel ones.
+- **Benchmark contamination.** The tasks were written for this project rather than copied from HumanEval or MBPP, but the easy suite is HumanEval-*style*, and close variants likely exist in training data. Pass@1 on classic problems overstates ability on novel ones. The hard suite reduces this, since its bug-fix code, class specs and rule sets are original, but it doesn't eliminate it: semver, cron and JSON Patch are well-known standards.
+- **The verifier sees code, not behavior.** It never executes anything, so it can only learn bug patterns that show up in the text. Long programs are truncated at 2,048 normalized bytes, which still makes 28% of the hard suite's pass/fail pairs indistinguishable to it. Treat it as a reranker that biases sampling, never as a replacement for the hidden tests.
+- **Self-training hasn't been run on a real model in this repo yet.** The development environment had no access to Hugging Face, so the pipeline is tested end to end with a tiny locally built model. Learning-curve numbers for a real model need a run on your machine. Small models also start near 0% on the hard suite, so `--warm-start` (supervised on training-task references) may be needed before they produce enough verified successes to learn from.
+- **The hard suite is not a repository benchmark.** Each task is still a single module. Multi-file, SWE-bench-style repair tasks would need the sandbox to copy a repo and run its own test suite.
 - **Simulated results are illustrative.** The `sim-*` models' behavior is designed. Only how feedback is used on a retry emerges from the feedback content, via the sandbox probes. The ablation shape above validates the pipeline, not a hypothesis about LLMs.
 - **The judge is optional and unvalidated.** LLM quality scores are not checked against human ratings. Treat them as a weak signal; correctness never depends on them.
 - **Cost figures** use a static price table in `config.py`. Check them against current provider pricing.
@@ -209,7 +354,8 @@ VERDICT: REGRESSION
 agent_eval/        package: sandbox, harness, feedback, prompts, agent, simulator, graph,
                    storage, metrics, regression, tasks, judge, report (+ HTML template)
 dashboard/app.py   Streamlit dashboard
-tasks/tasks.json   20 tasks: prompt, hidden tests, reference solution, mutants
+tasks/tasks.json   easy suite: 20 tasks (prompt, hidden tests, reference solution, mutants)
+tasks/tasks_hard.json  hard suite: 20 bug-fix / stateful / spec / performance tasks
 tests/             pytest suite (no API key needed)
 docs/DEV_NOTES.md  design log and findings
 main.py            CLI

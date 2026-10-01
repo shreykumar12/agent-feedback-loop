@@ -145,3 +145,31 @@ Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
     canon:  held-out generated 43.3 -> 66.7 (+23.3, p=2e-6); easy -6.7 (p=0.48); hard -3.3 (p=0.79)
   => canonical_names is the default. Code length is NOT the shortcut (AUC(length) ~0.50).
   Next step to close the gap: train on real LLM attempts (--with-attempts).
+
+## CURRENT STATE / NEXT STEPS (written before compacting, per the strategic-compact skill)
+Goal (user, restated): prove the feedback loop TEACHES a small local model. Gemini is too
+strong to show learning; a ~0.5B local model fails a lot, so self-training on its own
+sandbox-verified successes + repairs should raise its pass rate on UNSEEN tasks.
+
+Branches (all commits authored as shreykumar <156003188+shreykumar12@users.noreply.github.com>,
+no Claude trailers -- user asked commits show only them): main has everything up to the
+rate-limit fix. claude/11-hard-suite (hard suite) -> claude/12-pytorch (stacked on 11).
+User merges; never merge or open PRs.
+
+Work in progress on claude/12-pytorch (UNCOMMITTED at time of writing):
+- training_tasks.py: id_prefix + exclude (solution_fingerprint dedup) for a held-out suite
+- config.SUITES["heldout"] = tasks/tasks_heldout.json; main.py gen-train-tasks --id-prefix/--exclude
+- tasks/tasks_heldout.json generated with --n 152 --seed 1 --id-prefix heldout --exclude
+  tasks/tasks_train.json -> only 45 tasks survived. NOT validated yet. Investigate: dedup
+  too aggressive (low-variation families repeat across seeds?) -- maybe generate more (n 600)
+  or relax to exact-prompt dedup.
+
+Planned next (the "proof" additions):
+1. held-out generated eval suite (above) -- small models score ~0% on hard, need room to move
+2. `curve`: paired McNemar of each round vs round 0 per suite
+3. control experiment: selftrain --kinds with vs without "repair" examples, same base/seed,
+   to show FEEDBACK (not just more fine-tuning) drives the gain; expose --kinds on selftrain
+4. README protocol + realistic time estimates for an 8 GB Mac (cut LOCAL_MAX_NEW_TOKENS,
+   train-tasks ~100 per round)
+Open questions to user: actual RAM (M3 Pro ships >= 18GB); keep both semver tasks in hard?
+Skill installed: .claude/skills/strategic-compact (vendored, MIT, hook not included).

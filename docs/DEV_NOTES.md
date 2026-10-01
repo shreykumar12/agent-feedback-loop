@@ -116,3 +116,25 @@ Integration branch claude/sleepy-noether-1nmbe3 = everything. No merges, no PRs.
 - Open question for the user: two semver tasks (fix_semver_range_matcher in
   bugfix, semver_range_satisfies in spec). Kept both for now.
 - Test suite: 147 tests, ~100 s locally (the hard suite's validity tests add ~60 s).
+
+## PyTorch / self-improvement (branch claude/12-pytorch, stacked on 11)
+- Environment: huggingface.co and download.pytorch.org are blocked (403); PyPI works.
+  torch 2.14.1 came from PyPI (CUDA build, runs on CPU). Real models (Qwen) can only
+  be downloaded on the user's Mac; here everything is tested with ml/tiny.py
+  (a 2-layer random Llama + BPE tokenizer built locally).
+- User hardware: says "M3 Pro 8GB" (M3 Pro ships with >= 18GB; maybe a base M3).
+  Plan targets 0.5B models (Qwen2.5-Coder-0.5B-Instruct) on MPS, fp32 + grad ckpt.
+- LangChain kept: local models go through ChatHuggingFace(HuggingFacePipeline);
+  LangGraph loop unchanged. usage_metadata is empty for local models -> count with tokenizer.
+- transformers 5: apply_chat_template(tokenize=True) returns a BatchEncoding, not a list
+  (helper ml/device.chat_prompt_ids normalizes).
+- Verifier debugging (important finding):
+  1. First run: AUC ~0.5, could not even overfit 518 examples.
+  2. Root cause: reference solutions repeat the task docstring, so the differing lines
+     of pass/fail pairs fell past the 1024-byte window: 22% (train) / 49% (easy) / 73%
+     (hard) of pairs were byte-identical inputs with opposite labels.
+  3. Fixes: AST normalization (strip docstrings/comments), 2048-byte window with
+     4-byte patch embedding; pairwise ranking loss over same-task pairs + small BCE;
+     max pooling; more steps (lr 1e-3, 25 epochs). Overfit check then hit AUC ~0.9.
+  4. Also fixed a metric bug: best-of-N selection broke score ties using the label.
+- Hard suite still has 28% indistinguishable pairs at 2048 bytes (long programs).

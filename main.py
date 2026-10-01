@@ -401,9 +401,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval-suites", nargs="+", default=["easy", "hard"], help="held-out test suites")
     p.add_argument("--with-attempts", action="store_true",
                    help="also learn from every stored attempt (labeled by its sandbox verdict)")
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=25)
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--d-model", type=int, default=128)
     p.add_argument("--layers", type=int, default=3)
     p.add_argument("--heads", type=int, default=4)

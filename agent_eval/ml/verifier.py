@@ -12,8 +12,9 @@ Everything is hand-built, no pretrained weights:
                        embeddings, pre-norm transformer
                        blocks with a hand-written multi-head self-attention, then
                        [CLS] + masked-mean pooling into a single logit
-  * train_verifier  -- AdamW, cosine schedule, class-balanced BCE, early stopping
-                       on validation AUC, gradient clipping
+  * train_verifier  -- batches of whole tasks; loss = pairwise ranking (pass above
+                       fail, same task) + class-balanced BCE for calibration;
+                       AdamW, cosine schedule, early stopping on val AUC, clipping
   * evaluate        -- accuracy, ROC-AUC, Brier score, calibration error (ECE), and
                        best-of-N selection accuracy vs. a random-pick baseline
 
@@ -25,6 +26,7 @@ problems the verifier never saw, not memorized programs.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import math
 import random
@@ -103,12 +105,34 @@ def split_by_task(examples: list[Example], val_fraction: float = 0.15, seed: int
 
 # --- tokenizer ----------------------------------------------------------------
 
+def normalize_code(code: str) -> str:
+    """Drop docstrings and comments and canonicalize formatting (via the AST) so
+    the byte budget is spent on logic. Reference solutions repeat the whole task
+    docstring; without this, the differing lines of a pass/fail pair often fall
+    past the truncation window and identical inputs get opposite labels.
+    Code that doesn't parse is kept verbatim: being broken is itself the signal."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return code
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+    try:
+        return ast.unparse(tree)
+    except Exception:
+        return code
+
+
 class ByteTokenizer:
     PAD, CLS, SEP = 0, 1, 2
     OFFSET = 3
     vocab_size = 256 + OFFSET
 
-    def __init__(self, max_len: int = 1024, prompt_budget: int = 256):
+    def __init__(self, max_len: int = 2048, prompt_budget: int = 256):
         self.max_len = max_len
         self.prompt_budget = prompt_budget
 
@@ -117,7 +141,7 @@ class ByteTokenizer:
 
     def encode(self, prompt: str, code: str) -> list[int]:
         p = self._bytes(prompt, self.prompt_budget)
-        c = self._bytes(code, self.max_len - len(p) - 2)
+        c = self._bytes(normalize_code(code), self.max_len - len(p) - 2)
         return [self.CLS, *p, self.SEP, *c]
 
     def batch(self, pairs: list[tuple[str, str]]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -138,7 +162,7 @@ class VerifierConfig:
     n_layers: int = 3
     d_ff: int = 384
     dropout: float = 0.1
-    max_len: int = 1024
+    max_len: int = 2048
     prompt_budget: int = 256
     patch: int = 4  # bytes per token after the patch embedding
 
@@ -188,7 +212,9 @@ class VerifierNet(nn.Module):
         self.pos = nn.Embedding(cfg.max_len // cfg.patch + 1, cfg.d_model)
         self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg.n_layers))
         self.ln = nn.LayerNorm(cfg.d_model)
-        self.head = nn.Sequential(nn.Linear(2 * cfg.d_model, cfg.d_model), nn.GELU(), nn.Linear(cfg.d_model, 1))
+        # [CLS] + masked mean + masked max: max pooling keeps a single localized
+        # difference (one wrong comparison) from being averaged away.
+        self.head = nn.Sequential(nn.Linear(3 * cfg.d_model, cfg.d_model), nn.GELU(), nn.Linear(cfg.d_model, 1))
         self.apply(self._init)
 
     @staticmethod
@@ -215,7 +241,8 @@ class VerifierNet(nn.Module):
         x = self.ln(x)
         m = mask.unsqueeze(-1).float()
         mean = (x * m).sum(1) / m.sum(1).clamp(min=1)
-        return self.head(torch.cat([x[:, 0], mean], dim=-1)).squeeze(-1)  # logits
+        peak = x.masked_fill(~mask.unsqueeze(-1), float("-inf")).amax(1)
+        return self.head(torch.cat([x[:, 0], mean, peak], dim=-1)).squeeze(-1)  # logits
 
 
 # --- metrics ------------------------------------------------------------------
@@ -254,13 +281,19 @@ def selection_metrics(examples: list[Example], probs: list[float]) -> dict:
 
 @dataclass
 class TrainConfig:
-    epochs: int = 10
+    epochs: int = 25
     batch_size: int = 32
-    lr: float = 3e-4
+    lr: float = 1e-3
     weight_decay: float = 0.01
-    patience: int = 3
+    patience: int = 6
     seed: int = 0
     log_every: int = 0  # batches; 0 = per epoch only
+    # Pairwise ranking loss between a task's passing and failing programs. Best-of-N
+    # only needs the right order *within* a task, and near-identical pass/fail pairs
+    # make plain classification collapse to the base rate; the ranking term focuses
+    # the gradient on the tokens that differ. BCE stays on for calibrated scores.
+    rank_weight: float = 1.0
+    bce_weight: float = 0.2
 
 
 @dataclass
@@ -314,6 +347,44 @@ def evaluate(verifier: Verifier, examples: list[Example]) -> dict:
     }
 
 
+def task_batches(examples: list[Example], batch_size: int, rng: random.Random) -> list[list[Example]]:
+    """Shuffled batches made of whole tasks, so ranking pairs land in the same batch."""
+    groups: dict[str, list[Example]] = {}
+    for ex in examples:
+        groups.setdefault(ex.task_id, []).append(ex)
+    order = list(groups)
+    rng.shuffle(order)
+    batches, current = [], []
+    for task_id in order:
+        group = groups[task_id]
+        if current and len(current) + len(group) > batch_size:
+            batches.append(current)
+            current = []
+        current.extend(group)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def ranking_loss(logits: torch.Tensor, batch: list[Example]) -> torch.Tensor | None:
+    """Mean of -log sigmoid(s_pass - s_fail) over same-task (pass, fail) pairs."""
+    pos_idx, neg_idx = [], []
+    by_task: dict[str, list[int]] = {}
+    for i, ex in enumerate(batch):
+        by_task.setdefault(ex.task_id, []).append(i)
+    for idx in by_task.values():
+        for i in idx:
+            if batch[i].label:
+                for j in idx:
+                    if not batch[j].label:
+                        pos_idx.append(i)
+                        neg_idx.append(j)
+    if not pos_idx:
+        return None
+    diff = logits[torch.tensor(pos_idx)] - logits[torch.tensor(neg_idx)]
+    return F.softplus(-diff).mean()
+
+
 def train_verifier(train: list[Example], val: list[Example], model_cfg: VerifierConfig | None = None,
                    cfg: TrainConfig | None = None, log=print) -> tuple[Verifier, TrainResult]:
     model_cfg, cfg = model_cfg or VerifierConfig(), cfg or TrainConfig()
@@ -328,7 +399,7 @@ def train_verifier(train: list[Example], val: list[Example], model_cfg: Verifier
     net = VerifierNet(model_cfg).to(device)
     tok = ByteTokenizer(model_cfg.max_len, model_cfg.prompt_budget)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    steps = cfg.epochs * math.ceil(len(train) / cfg.batch_size)
+    steps = cfg.epochs * len(task_batches(train, cfg.batch_size, random.Random(0)))
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / max(1, steps // 20)) * 0.5 * (1 + math.cos(math.pi * min(s, steps) / steps)))
     n_pos = sum(e.label for e in train)
@@ -338,14 +409,15 @@ def train_verifier(train: list[Example], val: list[Example], model_cfg: Verifier
     best_auc, best_state, best_epoch, bad, history = -1.0, None, 0, 0, []
     for epoch in range(1, cfg.epochs + 1):
         net.train()
-        order = list(range(len(train)))
-        rng.shuffle(order)
         total = 0.0
-        for b, i in enumerate(range(0, len(order), cfg.batch_size)):
-            batch = [train[j] for j in order[i:i + cfg.batch_size]]
+        for b, batch in enumerate(task_batches(train, cfg.batch_size, rng)):
             ids, mask = tok.batch([(e.prompt, e.code) for e in batch])
             y = torch.tensor([float(e.label) for e in batch], device=device)
-            loss = F.binary_cross_entropy_with_logits(net(ids.to(device), mask.to(device)), y, pos_weight=pos_weight)
+            logits = net(ids.to(device), mask.to(device))
+            loss = cfg.bce_weight * F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
+            rank = ranking_loss(logits, batch)
+            if rank is not None:
+                loss = loss + cfg.rank_weight * rank
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(net.parameters(), 1.0)

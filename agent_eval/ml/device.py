@@ -30,6 +30,18 @@ def pick_dtype(device: str):
     return torch.float32
 
 
+def chat_prompt_ids(tokenizer, messages: list[dict]) -> list[int]:
+    """Token ids of a chat prompt ending in the assistant turn. transformers 5
+    returns a BatchEncoding from apply_chat_template(tokenize=True); older
+    versions return a plain list -- normalize both."""
+    out = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=True)
+    if hasattr(out, "keys") and "input_ids" in out:
+        out = out["input_ids"]
+    if out and isinstance(out[0], list):  # batched form
+        out = out[0]
+    return list(out)
+
+
 def seed_everything(seed: int) -> None:
     import random
 

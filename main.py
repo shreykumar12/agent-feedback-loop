@@ -121,6 +121,60 @@ def cmd_eval_verifier(args) -> int:
     return 0
 
 
+def cmd_gen_train_tasks(args) -> int:
+    from agent_eval.training_tasks import write_training_suite
+
+    out = args.out or str(config.SUITES["train"])
+    stats = write_training_suite(out, n=args.n, seed=args.seed, validate=not args.no_validate)
+    print(f"wrote {stats['written']} tasks to {out} ({stats['dropped']} dropped by validation) "
+          f"across {len(stats['families'])} families")
+    return 0
+
+
+def cmd_export_sft(args) -> int:
+    from agent_eval import storage
+    from agent_eval.ml import sft
+
+    run_ids = [rid for ref in args.runs for rid in storage.resolve_run_refs(ref)]
+    examples = sft.examples_from_runs(run_ids, tuple(args.kinds))
+    path = sft.write_jsonl(examples, args.out)
+    print(f"{len(examples)} examples {sft.counts(examples)} from {len(run_ids)} run(s) -> {path}")
+    return 0
+
+
+def cmd_selftrain(args) -> int:
+    from agent_eval.agent import AgentError
+    from agent_eval.ml import finetune, selftrain
+
+    lora = finetune.LoraTrainConfig(rank=args.lora_rank, alpha=args.lora_rank * 2, lr=args.lr, epochs=args.epochs,
+                                    grad_accum=args.grad_accum, max_len=args.max_len, max_steps=args.max_steps)
+    cfg = selftrain.SelfTrainConfig(
+        base_model=args.model, experiment=args.experiment, rounds=args.rounds, train_suite=args.train_suite,
+        eval_suites=tuple(args.eval_suites), train_tasks=args.train_tasks, eval_tasks=args.eval_tasks,
+        feedback_level=args.feedback_level, max_tries=args.max_tries, prompt_version=args.prompt_version,
+        warm_start=args.warm_start, seed=args.seed, lora=lora)
+    try:
+        rows = selftrain.self_train(cfg)
+    except (ValueError, AgentError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print("\n" + selftrain.format_curve(rows))
+    return 0
+
+
+def cmd_curve(args) -> int:
+    from agent_eval.ml import selftrain
+
+    experiments = [args.experiment] if args.experiment else selftrain.list_experiments()
+    if not experiments:
+        print("no self-training experiments yet -- python main.py selftrain --model hf:<model> --experiment NAME")
+        return 0
+    for name in experiments:
+        print(f"experiment {name}")
+        print(selftrain.format_curve(selftrain.learning_curve(name)) + "\n")
+    return 0
+
+
 def cmd_runs(args) -> int:
     from agent_eval import storage
 
@@ -356,6 +410,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default="models/verifier.pt")
     p.set_defaults(func=cmd_train_verifier)
+
+    p = sub.add_parser("gen-train-tasks", help="(re)build the procedurally generated training suite")
+    p.add_argument("--n", type=int, default=400)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out", default=None, help="default: tasks/tasks_train.json")
+    p.add_argument("--no-validate", action="store_true", help="skip running references + mutants in the sandbox")
+    p.set_defaults(func=cmd_gen_train_tasks)
+
+    p = sub.add_parser("export-sft", help="turn stored attempts into fine-tuning examples (JSONL)")
+    p.add_argument("runs", nargs="+", help="run ids, prefixes, latest, comma lists or @model/... selectors")
+    p.add_argument("--kinds", nargs="+", default=["direct", "repair", "distill"],
+                   choices=["direct", "repair", "distill"])
+    p.add_argument("--out", default="runs_ml/sft.jsonl")
+    p.set_defaults(func=cmd_export_sft)
+
+    p = sub.add_parser("selftrain", help="rounds of collect -> LoRA fine-tune -> eval on a local model")
+    p.add_argument("--model", required=True, help="local base model, e.g. hf:Qwen/Qwen2.5-Coder-0.5B-Instruct")
+    p.add_argument("--experiment", required=True, help="name for this run of rounds")
+    p.add_argument("--rounds", type=int, default=3)
+    p.add_argument("--train-suite", default="train")
+    p.add_argument("--eval-suites", nargs="+", default=["easy", "hard"])
+    p.add_argument("--train-tasks", type=int, default=200, help="training tasks collected on per round")
+    p.add_argument("--eval-tasks", type=int, default=None, help="limit eval tasks per suite (smoke tests)")
+    p.add_argument("--feedback-level", default="full", choices=FEEDBACK_LEVELS)
+    p.add_argument("--max-tries", type=int, default=config.MAX_TRIES)
+    p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
+    p.add_argument("--warm-start", action="store_true",
+                   help="also train on the training tasks' reference solutions (supervised bootstrap)")
+    p.add_argument("--lora-rank", type=int, default=16)
+    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--epochs", type=int, default=2)
+    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--max-len", type=int, default=1024)
+    p.add_argument("--max-steps", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.set_defaults(func=cmd_selftrain)
+
+    p = sub.add_parser("curve", help="learning curve of a self-training experiment")
+    p.add_argument("experiment", nargs="?")
+    p.set_defaults(func=cmd_curve)
 
     p = sub.add_parser("eval-verifier", help="score a trained verifier on suites' references + mutants")
     p.add_argument("path")

@@ -57,6 +57,9 @@ TASKS_PATH = Path(os.getenv("AGENT_EVAL_TASKS", PROJECT_ROOT / "tasks" / "tasks.
 SUITES = {
     "easy": PROJECT_ROOT / "tasks" / "tasks.json",
     "hard": PROJECT_ROOT / "tasks" / "tasks_hard.json",
+    # Procedurally generated TRAINING tasks for self-training and the verifier.
+    # Never used for evaluation; `python main.py gen-train-tasks` (re)builds it.
+    "train": PROJECT_ROOT / "tasks" / "tasks_train.json",
 }
 DEFAULT_SUITE = os.getenv("AGENT_EVAL_SUITE", "easy")
 DB_PATH = Path(os.getenv("AGENT_EVAL_DB", PROJECT_ROOT / "data" / "agent_eval.db"))

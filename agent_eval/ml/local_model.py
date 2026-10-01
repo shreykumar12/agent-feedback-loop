@@ -18,7 +18,7 @@ import threading
 from dataclasses import dataclass
 from functools import lru_cache
 
-from agent_eval.ml.device import pick_device, pick_dtype, seed_everything
+from agent_eval.ml.device import chat_prompt_ids, pick_device, pick_dtype, seed_everything
 
 PREFIX = "hf:"
 MAX_NEW_TOKENS = int(os.getenv("LOCAL_MAX_NEW_TOKENS", "768"))
@@ -94,11 +94,8 @@ class LocalChatModel:
         with self._lock:
             seed_everything(seed)
             out = self.chat.invoke(messages, pipeline_kwargs=gen)
-        prompt_ids = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            add_generation_prompt=True, tokenize=True)
-        if isinstance(prompt_ids, dict):  # some tokenizers return a BatchEncoding
-            prompt_ids = prompt_ids["input_ids"]
+        prompt_ids = chat_prompt_ids(
+            self.tokenizer, [{"role": "system", "content": system}, {"role": "user", "content": user}])
         text = out.content if isinstance(out.content, str) else str(out.content)
         return text, len(prompt_ids), self.count_tokens(text)
 

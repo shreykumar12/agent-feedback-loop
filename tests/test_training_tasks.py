@@ -165,3 +165,20 @@ def test_write_without_validation(tmp_path):
 def test_unknown_family_rejected():
     with pytest.raises(ValueError):
         generate_training_tasks(3, families=["no_such_family"])
+
+
+def test_build_suites_has_no_repeats_and_no_overlap(tmp_path):
+    from agent_eval.suite_builder import build_suites
+    from agent_eval.training_tasks import solution_fingerprint
+
+    stats = build_suites(tmp_path / "train.json", tmp_path / "heldout.json", pool_size=120,
+                         heldout_per_family=1, validate=False, log=lambda *a: None)
+    train = json.loads((tmp_path / "train.json").read_text())
+    heldout = json.loads((tmp_path / "heldout.json").read_text())
+    assert stats["train"] == len(train) and stats["heldout"] == len(heldout) > 0
+    train_fps = [solution_fingerprint(t) for t in train]
+    assert len(set(train_fps)) == len(train_fps)                      # no repeats in training
+    assert not set(train_fps) & {solution_fingerprint(t) for t in heldout}  # nothing shared
+    assert all(t["task_id"].startswith("gen_") for t in train)
+    assert all(t["task_id"].startswith("heldout_") for t in heldout)
+    assert {t["tags"][1] for t in heldout} <= {t["tags"][1] for t in train}  # every held-out family is trained on

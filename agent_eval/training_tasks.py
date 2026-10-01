@@ -2360,9 +2360,11 @@ def _components(rng: random.Random) -> _Spec:
 # --------------------------------------------------------------------------- public API
 
 
-def generate_training_tasks(n: int, seed: int = 0, families: list[str] | None = None) -> list[dict]:
+def generate_training_tasks(n: int, seed: int = 0, families: list[str] | None = None,
+                            id_prefix: str = "gen") -> list[dict]:
     """Deterministic: same (n, seed, families) -> identical output. Round-robins over families so
-    every family is represented; task_id = f"gen_{family}_{i:04d}" (unique)."""
+    every family is represented; task_id = f"{id_prefix}_{family}_{i:04d}" (unique). Use a different
+    id_prefix for any second suite (e.g. a held-out eval set): task ids are global in storage."""
     names = list(families) if families else list(FAMILIES)
     unknown = [f for f in names if f not in FAMILIES]
     if unknown:
@@ -2375,7 +2377,7 @@ def generate_training_tasks(n: int, seed: int = 0, families: list[str] | None = 
         index = i // len(names)
         rng = random.Random(f"agent-eval-training/{seed}/{family}/{index}")
         task = FAMILIES[family](rng, index)
-        task["task_id"] = f"gen_{family}_{i:04d}"
+        task["task_id"] = f"{id_prefix}_{family}_{i:04d}"
         tasks.append(task)
     return tasks
 
@@ -2445,10 +2447,38 @@ def validate_generated(tasks: list[dict], workers: int = 4) -> list[str]:
     return [f"{entry['task_id']}: {p}" for entry in tasks for p in problems.get(entry["task_id"], [])]
 
 
-def write_training_suite(path, n, seed=0, families=None, validate=True) -> dict:
+def solution_fingerprint(entry: dict) -> str:
+    """The reference solution with the entry point renamed and docstrings removed: two tasks with the
+    same fingerprint are the same problem, whatever they are called."""
+    import ast
+    import re
+
+    code = entry.get("canonical_solution") or ""
+    try:
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)) and node.body \
+                    and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) \
+                    and isinstance(node.body[0].value.value, str):
+                node.body = node.body[1:] or [ast.Pass()]
+        code = ast.unparse(tree)
+    except SyntaxError:
+        pass
+    return re.sub(rf"\b{re.escape(entry['entry_point'])}\b", "F", code)
+
+
+def write_training_suite(path, n, seed=0, families=None, validate=True, id_prefix="gen",
+                         exclude: list[dict] | None = None) -> dict:
     """Generate, optionally validate (DROP any task that fails validation rather than raising),
-    write JSON (indent=2) to path, return stats {"written", "dropped", "families": {name: count}}."""
-    tasks = generate_training_tasks(n, seed=seed, families=families)
+    write JSON (indent=2) to path, return stats {"written", "dropped", "families": {name: count}}.
+    `exclude`: tasks (e.g. the training suite) whose problems must not reappear -- any generated
+    task with the same solution fingerprint is dropped, so a held-out set is genuinely unseen."""
+    tasks = generate_training_tasks(n, seed=seed, families=families, id_prefix=id_prefix)
+    duplicates = 0
+    if exclude:
+        seen = {solution_fingerprint(t) for t in exclude}
+        kept = [t for t in tasks if solution_fingerprint(t) not in seen]
+        duplicates, tasks = len(tasks) - len(kept), kept
     dropped = 0
     if validate:
         bad = _problems_by_task(tasks)
@@ -2461,7 +2491,7 @@ def write_training_suite(path, n, seed=0, families=None, validate=True) -> dict:
     for t in tasks:
         family = t["tags"][1]
         counts[family] = counts.get(family, 0) + 1
-    return {"written": len(tasks), "dropped": dropped, "families": counts}
+    return {"written": len(tasks), "dropped": dropped, "duplicates_removed": duplicates, "families": counts}
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience CLI

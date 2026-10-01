@@ -126,9 +126,13 @@ def cmd_gen_train_tasks(args) -> int:
     from agent_eval.training_tasks import write_training_suite
 
     out = args.out or str(config.SUITES["train"])
-    stats = write_training_suite(out, n=args.n, seed=args.seed, validate=not args.no_validate)
-    print(f"wrote {stats['written']} tasks to {out} ({stats['dropped']} dropped by validation) "
-          f"across {len(stats['families'])} families")
+    exclude = []
+    for path in args.exclude or []:
+        exclude += json.loads(open(path, encoding="utf-8").read())
+    stats = write_training_suite(out, n=args.n, seed=args.seed, validate=not args.no_validate,
+                                 id_prefix=args.id_prefix, exclude=exclude)
+    print(f"wrote {stats['written']} tasks to {out} ({stats['dropped']} dropped by validation, "
+          f"{stats['duplicates_removed']} duplicates of excluded tasks removed) across {len(stats['families'])} families")
     return 0
 
 
@@ -420,6 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", default=None, help="default: tasks/tasks_train.json")
     p.add_argument("--no-validate", action="store_true", help="skip running references + mutants in the sandbox")
+    p.add_argument("--id-prefix", default="gen", help="task-id prefix; use a different one for a held-out set")
+    p.add_argument("--exclude", nargs="+", metavar="JSON",
+                   help="tasks files whose problems must not reappear (e.g. tasks/tasks_train.json)")
     p.set_defaults(func=cmd_gen_train_tasks)
 
     p = sub.add_parser("export-sft", help="turn stored attempts into fine-tuning examples (JSONL)")

@@ -54,6 +54,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { background: var(--page); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.5; margin: 0; }
 .wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: flex; flex-direction: column; gap: 22px; }
 h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 600; }
@@ -154,6 +155,12 @@ footer { font-size: 0.8rem; color: var(--muted); }
       <div class="chart loading" id="c-errors"></div>
       <div class="dyn" id="dyn"></div>
       <details><summary>Data table</summary><div class="table-wrap" id="t-errors"></div></details>
+    </article>
+    <article class="card wide" id="curve-card" hidden>
+      <h2>Self-training learning curve</h2>
+      <p class="caption">Each round fine-tunes a LoRA adapter on the model's own sandbox-verified successes from training tasks, then re-evaluates on the held-out suites. Round 0 is the base model.</p>
+      <div class="chart loading" id="c-curve"></div>
+      <details><summary>Data table</summary><div class="table-wrap" id="t-curve"></div></details>
     </article>
     <article class="card wide" id="regression-card" hidden>
       <h2>Regression check</h2>
@@ -266,6 +273,14 @@ footer { font-size: 0.8rem; color: var(--muted); }
   document.getElementById("category-card").hidden = !hasCategories;
   table("t-category", [{ label: "category", key: "category" }, { label: "segment", key: "segment" },
     { label: "share", key: "value", num: true, fmt: v => pct(v, 1) }, { label: "tasks", key: "n", num: true }], D.category);
+  const hasCurves = D.curves && D.curves.length > 0;
+  document.getElementById("curve-card").hidden = !hasCurves;
+  if (hasCurves) {
+    table("t-curve", [{ label: "experiment", key: "experiment" }, { label: "round", key: "round", num: true },
+      { label: "suite", key: "suite" }, { label: "metric", key: "metric" },
+      { label: "value", key: "value", num: true, fmt: v => pct(v, 1) },
+      { label: "training examples", key: "examples", num: true }, { label: "repairs", key: "repairs", num: true }], D.curves);
+  }
   table("t-transitions", [{ label: "from", key: "from" }, { label: "to", key: "to" }, { label: "retries", key: "count", num: true }], D.transitions);
   table("t-errors", [{ label: "verdict", key: "error_type" }, { label: "failed attempts", key: "count", num: true }], D.errors);
   table("t-grid", [{ label: "task", key: "task_id" }, { label: "difficulty", key: "difficulty" }, { label: "configuration", key: "config" },
@@ -409,6 +424,27 @@ footer { font-size: 0.8rem; color: var(--muted); }
 
     out["c-difficulty"] = { data: { values: withOrder(D.difficulty) }, width: chartWidth("c-difficulty"), height: 230,
       ...stackedLayer("difficulty", DIFFS, "difficulty") };
+
+    const experiments = [...new Set((D.curves || []).map(r => r.experiment))];
+    const curveLayer = {
+      layer: [
+        { mark: { type: "line" }, encoding: {
+            x: { field: "round", type: "ordinal", title: "self-training round", axis: { labelAngle: 0 } },
+            y: { field: "value", type: "quantitative", title: "pass rate", scale: { domain: [0, 1] }, axis: { format: "%", tickCount: 5 } },
+            color: { field: "suite", type: "nominal", title: "eval suite", scale: { range: T.s } },
+            strokeDash: { field: "metric", type: "nominal", title: null, sort: ["final", "pass@1"] },
+            detail: { field: "metric" } } },
+        { mark: { type: "point", filled: true, size: 70, stroke: T.surface, strokeWidth: 2, opacity: 1 }, encoding: {
+            x: { field: "round", type: "ordinal" }, y: { field: "value", type: "quantitative" },
+            color: { field: "suite", type: "nominal", scale: { range: T.s }, legend: null },
+            shape: { field: "metric", type: "nominal", legend: null },
+            tooltip: [{ field: "experiment" }, { field: "round" }, { field: "suite" }, { field: "metric" },
+                      { field: "value", format: ".1%" }, { field: "examples", title: "training examples" }] } },
+      ] };
+    out["c-curve"] = hasCurves ? (experiments.length > 1
+      ? { data: { values: D.curves }, facet: { field: "experiment", title: null }, columns: facetCols("c-curve", experiments.length),
+          spec: { width: chartWidth("c-curve", facetCols("c-curve", experiments.length)), height: 220, ...curveLayer } }
+      : { data: { values: D.curves }, width: chartWidth("c-curve"), height: 240, ...curveLayer }) : null;
 
     out["c-category"] = hasCategories ? { data: { values: withOrder(D.category) }, width: chartWidth("c-category"), height: 230,
       ...stackedLayer("category", CATS, "category") } : null;

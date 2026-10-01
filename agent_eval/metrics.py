@@ -181,6 +181,46 @@ def by_difficulty(results: list[dict], attempts: list[dict], field: str = "diffi
     return out
 
 
+def roc_auc(labels: list[int], scores: list[float]) -> float | None:
+    """ROC-AUC via the Mann-Whitney U statistic (average ranks for ties).
+    None if one class is missing."""
+    n_pos = sum(1 for y in labels if y == 1)
+    n_neg = len(labels) - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return None
+    order = sorted(range(len(scores)), key=lambda i: scores[i])
+    ranks = [0.0] * len(scores)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and scores[order[j + 1]] == scores[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1  # 1-based average rank of the tie group
+        i = j + 1
+    rank_sum = sum(r for r, y in zip(ranks, labels, strict=True) if y == 1)
+    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+
+def verifier_in_loop(attempts: list[dict]) -> dict | None:
+    """How well the learned verifier's score on the code it picked predicted the
+    sandbox verdict (only for best-of-N runs)."""
+    scored = [a for a in attempts if a.get("verifier_score") is not None]
+    if not scored:
+        return None
+    labels = [int(a["passed"]) for a in scored]
+    scores = [a["verifier_score"] for a in scored]
+    passed = [s for s, y in zip(scores, labels, strict=True) if y]
+    failed = [s for s, y in zip(scores, labels, strict=True) if not y]
+    return {
+        "attempts": len(scored),
+        "candidates": statistics.fmean(a.get("candidates") or 1 for a in scored),
+        "auc": roc_auc(labels, scores),
+        "mean_score_passed": statistics.fmean(passed) if passed else None,
+        "mean_score_failed": statistics.fmean(failed) if failed else None,
+    }
+
+
 def summarize_run(run: dict, results: list[dict], attempts: list[dict]) -> dict:
     max_tries = int(run.get("max_tries") or max((r["tries_taken"] for r in results), default=1))
     n = len(results)
@@ -248,6 +288,9 @@ def summarize_run(run: dict, results: list[dict], attempts: list[dict]) -> dict:
         "latency_p50_s": _percentile(latencies, 0.5),
         "latency_p95_s": _percentile(latencies, 0.95),
         "infra_errors": sum(1 for r in results if r.get("error")),
+        "candidates": run.get("candidates") or 1,
+        "verifier": run.get("verifier") or "",
+        "verifier_in_loop": verifier_in_loop(attempts),
         "mean_quality": {
             key: statistics.fmean(q[key] for q in quality if key in q)
             for key in ("readability", "approach") if any(key in q for q in quality)

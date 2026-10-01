@@ -36,6 +36,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from agent_eval.metrics import roc_auc
 from agent_eval.ml.device import pick_device, seed_everything
 
 # --- data -------------------------------------------------------------------
@@ -218,27 +219,6 @@ class VerifierNet(nn.Module):
 
 
 # --- metrics ------------------------------------------------------------------
-
-def roc_auc(labels: list[int], scores: list[float]) -> float | None:
-    """ROC-AUC via the Mann-Whitney U statistic (average ranks for ties).
-    None if one class is missing."""
-    n_pos = sum(1 for y in labels if y == 1)
-    n_neg = len(labels) - n_pos
-    if n_pos == 0 or n_neg == 0:
-        return None
-    order = sorted(range(len(scores)), key=lambda i: scores[i])
-    ranks = [0.0] * len(scores)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and scores[order[j + 1]] == scores[order[i]]:
-            j += 1
-        for k in range(i, j + 1):
-            ranks[order[k]] = (i + j) / 2 + 1  # 1-based average rank of the tie group
-        i = j + 1
-    rank_sum = sum(r for r, y in zip(ranks, labels, strict=True) if y == 1)
-    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
-
 
 def expected_calibration_error(labels: list[int], probs: list[float], bins: int = 10) -> float:
     total, ece = len(labels), 0.0

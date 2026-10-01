@@ -136,6 +136,16 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
     if compare:
         comparison = regression.compare_runs(*compare)
 
+    curves = []
+    from agent_eval.ml import selftrain  # stdlib-only at import time; no torch needed
+
+    for experiment in selftrain.list_experiments():
+        for row in selftrain.learning_curve(experiment):
+            for metric, label in (("pass_at_1", "pass@1"), ("pass_rate", "final")):
+                curves.append({"experiment": experiment, "round": row["round"], "suite": row["suite"],
+                               "metric": label, "value": row[metric], "examples": row["examples"],
+                               "repairs": row["repair_examples"]})
+
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "simulated": any(r["model"].startswith("sim") for r in runs),
@@ -154,6 +164,7 @@ def build_payload(run_ids: list[str] | None = None, focus_run_id: str | None = N
         "errors": error_rows,
         "partial": partial_rows,
         "comparison": comparison,
+        "curves": curves,
         "runs": [{k: r.get(k) for k in ("run_id", "timestamp", "model", "prompt_version", "feedback_level",
                                         "max_tries", "seed", "num_tasks", "pass_rate", "notes")} for r in runs],
     }

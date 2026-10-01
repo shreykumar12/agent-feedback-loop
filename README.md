@@ -154,6 +154,44 @@ What this shows:
 
 (The simulated agent's candidates are the tasks' reference solutions and mutants, so these numbers measure the verifier's ranking quality in the real loop. They are not claims about an LLM's raw ability.)
 
+### Proving the loop teaches a small model
+
+Frontier models already pass most of these tasks, so they can't show learning. A small local model can: it fails often, has room to improve, and is cheap to fine-tune. The claim to test is: **"self-training on its own feedback-driven successes makes it better on problems it has never seen, and the feedback is what does it."**
+
+1. **Build the data.**
+   ```bash
+   python main.py build-suites --pool 3000 --heldout-per-family 3
+   ```
+   This writes `tasks/tasks_train.json` and `tasks/tasks_heldout.json` from one pool with one task per distinct problem. Training has no repeats, and no held-out problem appears in training.
+
+2. **Treatment run:** self-train with full feedback.
+   ```bash
+   python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment fb-full \
+       --rounds 3 --train-tasks 100 --feedback-level full
+   ```
+
+3. **Control run:** identical, but the loop's retries get no information.
+   ```bash
+   python main.py selftrain --model hf:Qwen/Qwen2.5-Coder-0.5B-Instruct --experiment fb-none \
+       --rounds 3 --train-tasks 100 --feedback-level none
+   ```
+   An alternative control keeps the feedback but drops the repair examples from training: `--kinds direct distill`.
+
+4. **Read the result.**
+   ```bash
+   python main.py curve fb-full        # pass@1 per round, each round tested against round 0
+   python main.py curve fb-none
+   python main.py compare-experiments fb-full fb-none   # final models, paired task by task
+   ```
+
+The loop has been shown to teach the model if `fb-full` improves held-out pass@1 over round 0 with a small McNemar p-value **and** beats `fb-none` in `compare-experiments`. Round 0 runs the same base model in both experiments, so the two curves share a starting point.
+
+Practical notes for an 8 GB Mac:
+- Run a tiny version first to measure speed: `--rounds 1 --train-tasks 20 --eval-tasks 20`. Then size the real run from how long that took.
+- Shorter generations speed everything up: `LOCAL_MAX_NEW_TOKENS=384` is enough for these tasks.
+- Close other apps during training. Generation and LoRA training share the 8 GB of unified memory.
+- If round 0 solves almost nothing on the training tasks, add `--warm-start`. It supervises round 1 on the training tasks' reference solutions to bootstrap. That's supervised data, not self-generated, so report it.
+
 **On an 8 GB Apple Silicon Mac:** a 0.5B model (e.g. Qwen2.5-Coder-0.5B-Instruct) fits for both generation and LoRA training, in fp32 with gradient checkpointing. 1.5B models are better trained on a CUDA GPU (e.g. Colab). The verifier trains in minutes on CPU and faster on MPS.
 
 ```bash

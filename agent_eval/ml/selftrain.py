@@ -49,7 +49,7 @@ class SelfTrainConfig:
     experiment: str
     rounds: int = 3
     train_suite: str = "train"
-    eval_suites: tuple[str, ...] = ("easy", "hard")
+    eval_suites: tuple[str, ...] = ("heldout", "easy")
     train_tasks: int | None = 200  # how many training tasks to collect on per round
     eval_tasks: int | None = None  # None = whole eval suites
     feedback_level: str = "full"
@@ -105,12 +105,26 @@ def rounds(experiment: str) -> list[dict]:
 
 
 def learning_curve(experiment: str) -> list[dict]:
-    """One row per (round, suite): the eval metrics of that round's model."""
+    """One row per (round, suite): the eval metrics of that round's model, plus a
+    paired comparison against round 0 on the same tasks (exact McNemar on
+    first-try and final outcomes), so "it improved" comes with a p-value."""
+    from agent_eval import regression
+
     rows = []
+    base_runs: dict[str, str] = {}
     for r in rounds(experiment):
         for suite, run_id in r["eval_run_ids"].items():
             s = metrics.load_summary(run_id)
-            rows.append({
+            base_runs.setdefault(suite, run_id)
+            vs_base = {}
+            if base_runs[suite] != run_id:
+                cmp = regression.compare_runs(base_runs[suite], run_id)
+                vs_base = {
+                    "gained_at_1": len(cmp["first_try_gained"]), "lost_at_1": len(cmp["first_try_lost"]),
+                    "p_at_1": cmp["mcnemar_p_at_1"], "gained": len(cmp["newly_passing"]),
+                    "lost": len(cmp["newly_failing"]), "p": cmp["mcnemar_p"],
+                }
+            rows.append({**vs_base,
                 "round": r["round"], "suite": suite, "run_id": run_id, "model": r["model"],
                 "examples": r["examples"], "pass_at_1": s["pass_at_1"], "pass_rate": s["pass_rate"],
                 "recovery_rate": s["recovery_rate"], "mean_tries_to_pass": s["mean_tries_to_pass"],
@@ -185,14 +199,33 @@ def self_train(cfg: SelfTrainConfig, log=print) -> list[dict]:
     return learning_curve(cfg.experiment)
 
 
+def compare_experiments(treatment: str, control: str) -> dict[str, dict]:
+    """Paired comparison of two experiments' FINAL-round models on each shared eval
+    suite (e.g. trained with feedback vs. without). Same tasks, task by task."""
+    from agent_eval import regression
+
+    def final_runs(name: str) -> dict[str, str]:
+        rs = rounds(name)
+        if not rs:
+            raise KeyError(f"unknown experiment {name!r}")
+        return next((r["eval_run_ids"] for r in reversed(rs) if r["eval_run_ids"]), {})
+
+    t, c = final_runs(treatment), final_runs(control)
+    return {suite: regression.compare_runs(c[suite], t[suite]) for suite in sorted(t.keys() & c.keys())}
+
+
 def format_curve(rows: list[dict]) -> str:
     if not rows:
         return "no rounds recorded"
-    lines = [f"{'round':>5}  {'suite':<6}{'examples':>9}{'repairs':>8}{'pass@1':>9}{'final':>9}{'recovery':>10}{'loss':>8}"]
+    lines = [f"{'round':>5}  {'suite':<8}{'examples':>9}{'repairs':>8}{'pass@1':>9}{'final':>9}{'recovery':>10}"
+             f"{'loss':>8}   vs round 0 (pass@1: +gained/-lost, McNemar p)"]
     for r in rows:
         def pct(v):
             return "-" if v is None else f"{v:.1%}"
         loss = "-" if r["train_loss"] is None else f"{r['train_loss']:.3f}"
-        lines.append(f"{r['round']:>5}  {r['suite']:<6}{r['examples']:>9}{r['repair_examples']:>8}"
-                     f"{pct(r['pass_at_1']):>9}{pct(r['pass_rate']):>9}{pct(r['recovery_rate']):>10}{loss:>8}")
+        vs = ""
+        if "p_at_1" in r:
+            vs = f"   +{r['gained_at_1']}/-{r['lost_at_1']}  p={r['p_at_1']:.3g}"
+        lines.append(f"{r['round']:>5}  {r['suite']:<8}{r['examples']:>9}{r['repair_examples']:>8}"
+                     f"{pct(r['pass_at_1']):>9}{pct(r['pass_rate']):>9}{pct(r['recovery_rate']):>10}{loss:>8}{vs}")
     return "\n".join(lines)

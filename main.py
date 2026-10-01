@@ -136,6 +136,21 @@ def cmd_gen_train_tasks(args) -> int:
     return 0
 
 
+def cmd_build_suites(args) -> int:
+    from agent_eval.suite_builder import build_suites
+
+    stats = build_suites(config.SUITES["train"], config.SUITES["heldout"], pool_size=args.pool,
+                         heldout_per_family=args.heldout_per_family, max_train=args.max_train,
+                         seed=args.seed, validate=not args.no_validate)
+    print(f"train {stats['train']} tasks -> {config.SUITES['train']}")
+    print(f"heldout {stats['heldout']} tasks -> {config.SUITES['heldout']}")
+    print(f"({stats['distinct']} distinct problems from a pool of {stats['pool']}, "
+          f"{stats['dropped']} dropped by validation, {stats['families']} families)")
+    if stats["families_without_heldout"]:
+        print("families too small for a held-out task: " + ", ".join(stats["families_without_heldout"]))
+    return 0
+
+
 def cmd_export_sft(args) -> int:
     from agent_eval import storage
     from agent_eval.ml import sft
@@ -157,13 +172,27 @@ def cmd_selftrain(args) -> int:
         base_model=args.model, experiment=args.experiment, rounds=args.rounds, train_suite=args.train_suite,
         eval_suites=tuple(args.eval_suites), train_tasks=args.train_tasks, eval_tasks=args.eval_tasks,
         feedback_level=args.feedback_level, max_tries=args.max_tries, prompt_version=args.prompt_version,
-        warm_start=args.warm_start, seed=args.seed, lora=lora)
+        warm_start=args.warm_start, seed=args.seed, lora=lora, kinds=tuple(args.kinds))
     try:
         rows = selftrain.self_train(cfg)
     except (ValueError, AgentError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print("\n" + selftrain.format_curve(rows))
+    return 0
+
+
+def cmd_compare_experiments(args) -> int:
+    from agent_eval import regression
+    from agent_eval.ml import selftrain
+
+    results = selftrain.compare_experiments(args.treatment, args.control)
+    if not results:
+        print("the two experiments share no eval suites")
+        return 2
+    for suite, cmp in results.items():
+        print(f"## {suite}: {args.treatment} (candidate) vs {args.control} (baseline), final rounds")
+        print(regression.format_report(cmp))
     return 0
 
 
@@ -429,6 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tasks files whose problems must not reappear (e.g. tasks/tasks_train.json)")
     p.set_defaults(func=cmd_gen_train_tasks)
 
+    p = sub.add_parser("build-suites", help="build the train + held-out suites from one de-duplicated pool")
+    p.add_argument("--pool", type=int, default=3000, help="candidate tasks to generate before de-duplication")
+    p.add_argument("--heldout-per-family", type=int, default=3)
+    p.add_argument("--max-train", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--no-validate", action="store_true")
+    p.set_defaults(func=cmd_build_suites)
+
     p = sub.add_parser("export-sft", help="turn stored attempts into fine-tuning examples (JSONL)")
     p.add_argument("runs", nargs="+", help="run ids, prefixes, latest, comma lists or @model/... selectors")
     p.add_argument("--kinds", nargs="+", default=["direct", "repair", "distill"],
@@ -441,7 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--experiment", required=True, help="name for this run of rounds")
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--train-suite", default="train")
-    p.add_argument("--eval-suites", nargs="+", default=["easy", "hard"])
+    p.add_argument("--eval-suites", nargs="+", default=["heldout", "easy"],
+                   help="held-out suites to measure each round on (hard is ~0%% for small models)")
     p.add_argument("--train-tasks", type=int, default=200, help="training tasks collected on per round")
     p.add_argument("--eval-tasks", type=int, default=None, help="limit eval tasks per suite (smoke tests)")
     p.add_argument("--feedback-level", default="full", choices=FEEDBACK_LEVELS)
@@ -449,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prompt-version", default=config.DEFAULT_PROMPT_VERSION, choices=sorted(PROMPTS))
     p.add_argument("--warm-start", action="store_true",
                    help="also train on the training tasks' reference solutions (supervised bootstrap)")
+    p.add_argument("--kinds", nargs="+", default=["direct", "repair", "distill"],
+                   choices=["direct", "repair", "distill"],
+                   help="which verified examples to train on; drop 'repair' for a no-feedback-learning control")
     p.add_argument("--lora-rank", type=int, default=16)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--epochs", type=int, default=2)
@@ -457,6 +498,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-steps", type=int, default=None)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(func=cmd_selftrain)
+
+    p = sub.add_parser("compare-experiments",
+                       help="paired test of two self-training experiments' final models (e.g. with vs without feedback)")
+    p.add_argument("treatment")
+    p.add_argument("control")
+    p.set_defaults(func=cmd_compare_experiments)
 
     p = sub.add_parser("curve", help="learning curve of a self-training experiment")
     p.add_argument("experiment", nargs="?")

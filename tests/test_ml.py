@@ -183,6 +183,8 @@ def test_selftrain_records_a_learning_curve(tiny_model, tmp_db, tmp_path):
     assert rows[1]["examples"] > 0 and rows[1]["train_loss"] is not None
     assert (tmp_path / "adapters" / "round_1" / "adapter_config.json").exists()
     assert "round" in selftrain.format_curve(rows)
+    assert "p_at_1" in rows[1] and "p_at_1" not in rows[0]  # every later round is tested against round 0
+    assert "easy" in selftrain.compare_experiments("t", "t")
     with pytest.raises(ValueError, match="already exists"):
         selftrain.self_train(cfg, log=lambda *a: None)
 
